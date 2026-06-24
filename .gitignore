@@ -1,0 +1,16 @@
+# Dépendances
+node_modules/
+
+# Build / artefacts
+dist/
+
+# Données locales / sauvegardes (ne jamais publier)
+data/instances.backup.json
+data/instances.local.json
+*.backup.json
+
+# Réglages locaux Claude Code
+.claude/
+
+# OS
+.DS_Store

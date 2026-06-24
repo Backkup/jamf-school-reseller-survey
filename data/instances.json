@@ -1,0 +1,8 @@
+{
+  "delivery": {
+    "mode": "local",
+    "botToken": "",
+    "channelId": ""
+  },
+  "masters": []
+}

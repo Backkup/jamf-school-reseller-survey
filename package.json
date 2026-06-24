@@ -1,0 +1,38 @@
+{
+  "name": "apnsmaster",
+  "version": "1.0.0",
+  "description": "Audit des certificats Jamf School par revendeur",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac"
+  },
+  "keywords": [],
+  "author": "Hegeoma",
+  "license": "ISC",
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.hegeoma.jamfschoolresellersurvey",
+    "productName": "Jamf School Reseller Survey",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": "dir"
+    },
+    "files": [
+      "main.js",
+      "scraper.js",
+      "report.js",
+      "slack.js",
+      "preload.js",
+      "renderer/**/*",
+      "data/**/*",
+      "node_modules/**/*"
+    ]
+  }
+}

@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Jamf School Reseller Survey</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f6f3;
+    --surface-2: #f0efea;
+    --text: #37352f;
+    --muted: #8c887f;
+    --faint: #b4b0a8;
+    --border: #e8e7e2;
+    --accent: #c96442;
+    --accent-soft: #f6ece7;
+    --green: #4a8a5d;
+    --scroll: #dcdad3;
+    --radius: 9px;
+  }
+  body.dark {
+    --bg: #1f1e1c;
+    --surface: #292826;
+    --surface-2: #333128;
+    --text: #ece9e2;
+    --muted: #9a958b;
+    --faint: #6c685f;
+    --border: #393730;
+    --accent: #d97757;
+    --accent-soft: #38291f;
+    --green: #6aa87d;
+    --scroll: #4a463f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; overflow: hidden; }
+
+  .titlebar { position: relative; height: 40px; -webkit-app-region: drag; display: flex; align-items: center; justify-content: center; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .titlebar h1 { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .2px; }
+  .theme-toggle { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); -webkit-app-region: no-drag; background: transparent; border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; font-size: 14px; line-height: 1; cursor: pointer; color: var(--text); }
+  .theme-toggle:hover { background: var(--bg); }
+
+  /* Switch */
+  .switch { position: relative; display: inline-block; width: 38px; height: 22px; flex-shrink: 0; -webkit-app-region: no-drag; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; inset: 0; background: #d8d6cf; border-radius: 22px; cursor: pointer; transition: background .18s; }
+  .switch .slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .18s; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(16px); }
+
+  button { font-family: inherit; border: none; border-radius: 7px; padding: 7px 13px; font-size: 13px; font-weight: 500; cursor: pointer; transition: background .15s, opacity .15s; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #b9573a; }
+  .btn-soft { background: var(--surface-2); color: var(--text); }
+  .btn-soft:hover { background: #e6e4dd; }
+  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--surface); color: var(--text); }
+  .btn-danger { background: transparent; color: #b3543f; border: 1px solid #eadcd7; }
+  .btn-danger:hover { background: #fbf0ec; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* Tabs */
+  .tabbar { display: flex; align-items: center; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; }
+  .tab { padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+  .tab:hover { background: var(--surface); color: var(--text); }
+  .tab.active { background: var(--accent-soft); color: var(--accent); }
+  .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .tab .dot.off { background: var(--faint); }
+  .tab-add { color: var(--muted); border: 1px dashed var(--border); }
+
+  /* Master header */
+  .master-bar { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .master-bar .meta { flex: 1; min-width: 0; }
+  .master-bar .mname { font-size: 16px; font-weight: 600; }
+  .master-bar .murl { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+
+  .subtoolbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; flex-shrink: 0; }
+  .subtoolbar input[type="text"] { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; }
+  .subtoolbar input[type="text"]:focus { border-color: var(--accent); background: #fff; }
+  .subtoolbar input::placeholder { color: var(--faint); }
+
+  /* Scrollable instances */
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 16px; }
+  .scroll::-webkit-scrollbar { width: 10px; }
+  .scroll::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 6px; border: 2px solid var(--bg); }
+
+  .instance-card { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--bg); overflow: hidden; }
+  .instance-row { display: flex; align-items: center; gap: 12px; padding: 11px 12px; }
+  .instance-card.disabled .instance-row { opacity: .55; }
+  .instance-row .info { flex: 1; min-width: 0; }
+  .instance-row .iname { font-size: 13px; font-weight: 500; }
+  .instance-row .iurl { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .checks { display: flex; gap: 9px; flex-shrink: 0; }
+  .chip { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; padding: 4px 8px; border-radius: 6px; background: var(--surface); }
+  .chip input { accent-color: var(--accent); margin: 0; }
+  .icon-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 5px 8px; font-size: 12px; }
+  .icon-btn:hover { background: var(--surface); color: var(--text); }
+
+  .reason-wrap { display: flex; align-items: center; gap: 8px; padding: 0 12px 11px 50px; }
+  .reason-wrap .lbl { font-size: 11px; color: var(--accent); white-space: nowrap; }
+  .reason-input { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; color: var(--text); font-size: 12px; outline: none; }
+  .reason-input:focus { border-color: var(--accent); background: var(--bg); }
+
+  .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 40px 20px; }
+
+  /* Delivery footer */
+  .footer { border-top: 1px solid var(--border); background: var(--surface); flex-shrink: 0; padding: 10px 18px; display: flex; flex-direction: column; gap: 8px; }
+  .frow { display: flex; align-items: center; gap: 10px; }
+  .frow label { font-size: 12px; color: var(--muted); }
+  .seg { display: inline-flex; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button { background: transparent; border: none; color: var(--muted); font-size: 12px; padding: 6px 13px; }
+  .seg button.active { background: var(--accent); color: #fff; }
+  .slack-fields { display: none; gap: 8px; flex-wrap: wrap; }
+  .slack-fields.show { display: flex; }
+  .slack-fields input { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 6px 10px; color: var(--text); font-size: 12px; outline: none; }
+  .slack-fields input:focus { border-color: var(--accent); }
+  #botToken { flex: 1; min-width: 240px; }
+  #channelId { width: 150px; }
+  .footer-info { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  /* Modal */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(40,38,34,.4); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.active { display: flex; }
+  .modal { background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 22px 24px; width: 440px; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+  .modal h2 { font-size: 16px; margin-bottom: 6px; }
+  .modal label { font-size: 12px; color: var(--muted); display: block; margin: 14px 0 5px; }
+  .modal input { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 9px 12px; color: var(--text); font-size: 13px; outline: none; }
+  .modal input:focus { border-color: var(--accent); background: #fff; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 22px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="titlebar">
+  <h1>Jamf School Reseller Survey</h1>
+  <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Basculer le thème">🌙</button>
+</div>
+
+<div class="tabbar" id="tabbar"></div>
+
+<div id="masterArea" style="display:flex; flex-direction:column; flex:1; min-height:0;">
+  <div class="master-bar" id="masterBar"></div>
+  <div class="subtoolbar">
+    <input type="text" id="searchInput" placeholder="Rechercher une école..." oninput="renderInstances()" />
+    <button class="btn-soft btn-sm" onclick="showAddInstance()">+ École</button>
+  </div>
+  <div class="scroll" id="scroll"></div>
+</div>
+
+<div class="footer">
+  <div class="frow">
+    <label>Livraison :</label>
+    <div class="seg">
+      <button id="modeLocal" onclick="setMode('local')">Local</button>
+      <button id="modeSlack" onclick="setMode('slack')">Slack</button>
+    </div>
+    <div class="slack-fields" id="slackFields">
+      <input type="text" id="botToken" placeholder="Bot token (xoxb-…)  ·  scopes files:write, chat:write" />
+      <input type="text" id="channelId" placeholder="ID canal (C01…)" />
+    </div>
+    <button class="btn-ghost btn-sm" onclick="saveDelivery()">Enregistrer</button>
+    <span class="footer-info" id="footerInfo"></span>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="masterModal">
+  <div class="modal">
+    <h2 id="masterModalTitle">Nouveau revendeur</h2>
+    <label>Nom</label>
+    <input type="text" id="newMasterName" placeholder="ex: Mon Revendeur" />
+    <label>URL de connexion (page de login SSO)</label>
+    <input type="text" id="newMasterUrl" placeholder="https://xxx.auth-1.jamfcloud.com/?redirect-url=xxx.jamfcloud.com" />
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="hideAddMaster()">Annuler</button>
+      <button class="btn-primary" onclick="addMaster()">Ajouter</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="instanceModal">
+  <div class="modal">
+    <h2 id="instanceModalTitle">Nouvelle école</h2>
+    <label>Nom affiché</label>
+    <input type="text" id="newInstancePrefix" placeholder="ex: Mon École" />
+    <label>URL de l'école (jusqu'à .jamfcloud.com)</label>
+    <input type="text" id="newInstanceUrl" placeholder="https://monecole.jamfcloud.com" />
+    <div class="modal-actions">
+      <button class="btn-ghost" onclick="hideAddInstance()">Annuler</button>
+      <button class="btn-primary" onclick="addInstance()">Ajouter</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let config = null;
+let activeId = null;
+
+function applyTheme(theme) {
+  document.body.classList.toggle('dark', theme === 'dark');
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+function toggleTheme() {
+  const next = document.body.classList.contains('dark') ? 'light' : 'dark';
+  localStorage.setItem('theme', next);
+  applyTheme(next);
+}
+(function initTheme() {
+  let t = localStorage.getItem('theme');
+  if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  applyTheme(t);
+})();
+
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+function activeMaster() { return config.masters.find(m => m.id === activeId) || config.masters[0]; }
+
+async function init() {
+  try {
+    config = await window.api.getConfig();
+    if (!config || config.error) { document.body.insertAdjacentHTML('beforeend', `<div class="empty">Erreur : ${config?.error || 'config introuvable'}</div>`); return; }
+    if (!config.delivery) config.delivery = { mode: 'local', botToken: '', channelId: '' };
+    document.getElementById('botToken').value = config.delivery.botToken || '';
+    document.getElementById('channelId').value = config.delivery.channelId || '';
+    setMode(config.delivery.mode || 'local', true);
+    activeId = config.masters[0] ? config.masters[0].id : null;
+    renderAll();
+  } catch (err) {
+    document.body.insertAdjacentHTML('beforeend', `<div class="empty">Erreur : ${err.message}</div>`);
+  }
+}
+
+function renderAll() { renderTabs(); renderMasterBar(); renderInstances(); }
+
+function renderTabs() {
+  const bar = document.getElementById('tabbar');
+  bar.innerHTML = '';
+  config.masters.forEach(m => {
+    const t = document.createElement('div');
+    t.className = 'tab' + (m.id === activeId ? ' active' : '');
+    t.onclick = () => { activeId = m.id; renderAll(); };
+    t.innerHTML = `<span class="dot ${m.enabled ? '' : 'off'}"></span>${esc(m.name)}`;
+    bar.appendChild(t);
+  });
+  const add = document.createElement('div');
+  add.className = 'tab tab-add';
+  add.textContent = '+ Revendeur';
+  add.onclick = showAddMaster;
+  bar.appendChild(add);
+}
+
+function renderMasterBar() {
+  const bar = document.getElementById('masterBar');
+  const m = activeMaster();
+  if (!m) { bar.innerHTML = ''; document.getElementById('masterArea').style.display = 'none'; return; }
+  document.getElementById('masterArea').style.display = 'flex';
+  bar.innerHTML = `
+    <label class="switch"><input type="checkbox" ${m.enabled ? 'checked' : ''} onchange="toggleMaster('${m.id}',this.checked)"><span class="slider"></span></label>
+    <div class="meta">
+      <div class="mname">${esc(m.name)}</div>
+      <div class="murl">${esc(m.loginUrl)}</div>
+    </div>
+    <button class="btn-primary btn-sm" onclick="launchMaster('${m.id}')">▶ Lancer la collecte</button>
+    <button class="icon-btn" title="Modifier le revendeur" onclick="editMaster('${m.id}')">✎</button>
+    <button class="btn-danger btn-sm" onclick="removeMaster('${m.id}','${esc(m.name)}')">Supprimer</button>`;
+}
+
+function renderInstances() {
+  const m = activeMaster();
+  const scroll = document.getElementById('scroll');
+  if (!m) { scroll.innerHTML = '<div class="empty">Aucun revendeur. Cliquez « + Revendeur ».</div>'; return; }
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const list = m.instances.filter(i => i.prefix.toLowerCase().includes(search));
+
+  scroll.innerHTML = list.map(inst => `
+    <div class="instance-card ${inst.enabled ? '' : 'disabled'}">
+      <div class="instance-row">
+        <label class="switch"><input type="checkbox" ${inst.enabled ? 'checked' : ''} onchange="toggleInstance('${m.id}','${inst.id}',this.checked)"><span class="slider"></span></label>
+        <div class="info">
+          <div class="iname">${esc(inst.prefix)}</div>
+          <div class="iurl">${esc(inst.url)}</div>
+        </div>
+        <div class="checks">
+          <label class="chip"><input type="checkbox" ${inst.collectApns ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectApns',this.checked)">APNs</label>
+          <label class="chip"><input type="checkbox" ${inst.collectVpp ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectVpp',this.checked)">VPP</label>
+          <label class="chip"><input type="checkbox" ${inst.collectDep ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectDep',this.checked)">ADE</label>
+          <label class="chip"><input type="checkbox" ${inst.collectNotifications ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectNotifications',this.checked)">Notifs</label>
+        </div>
+        <button class="icon-btn" title="Modifier" onclick="editInstance('${m.id}','${inst.id}')">✎</button>
+        <button class="btn-danger btn-sm" onclick="removeInstance('${m.id}','${inst.id}')">✕</button>
+      </div>
+      ${inst.enabled ? '' : `<div class="reason-wrap">
+        <span class="lbl">Raison :</span>
+        <input class="reason-input" placeholder="Pourquoi cette instance est-elle désactivée ? (apparaîtra dans le rapport)" value="${esc(inst.disabledReason || '')}" oninput="setReason('${m.id}','${inst.id}',this.value)">
+      </div>`}
+    </div>`).join('') || '<div class="empty">Aucune école. Cliquez « + École ».</div>';
+
+  const enabled = m.instances.filter(i => i.enabled).length;
+  document.getElementById('footerInfo').textContent = `${m.name} · ${enabled}/${m.instances.length} activées`;
+}
+
+async function save() { await window.api.saveConfig(config); }
+
+function toggleMaster(id, v) { const m = config.masters.find(x => x.id === id); if (m) m.enabled = v; save(); renderTabs(); renderMasterBar(); }
+function toggleInstance(mid, id, v) { const m = config.masters.find(x => x.id === mid); const i = m && m.instances.find(x => x.id === id); if (i) i.enabled = v; save(); renderInstances(); }
+function toggleField(mid, id, f, v) { const m = config.masters.find(x => x.id === mid); const i = m && m.instances.find(x => x.id === id); if (i) i[f] = v; save(); }
+
+async function removeMaster(id, name) {
+  if (!confirm(`Supprimer le revendeur « ${name} » et toutes ses écoles ?`)) return;
+  config = await window.api.removeMaster(id);
+  if (activeId === id) activeId = config.masters[0] ? config.masters[0].id : null;
+  renderAll();
+}
+async function removeInstance(mid, id) { config = await window.api.removeInstance({ masterId: mid, id }); renderInstances(); }
+
+let editingMaster = null;   // null = ajout, sinon id du maître édité
+let editingInstance = null; // null = ajout, sinon {masterId, id}
+
+function showAddMaster() {
+  editingMaster = null;
+  document.getElementById('masterModalTitle').textContent = 'Nouveau revendeur';
+  document.getElementById('newMasterName').value = '';
+  document.getElementById('newMasterUrl').value = '';
+  document.getElementById('masterModal').classList.add('active');
+}
+function editMaster(id) {
+  const m = config.masters.find(x => x.id === id);
+  if (!m) return;
+  editingMaster = id;
+  document.getElementById('masterModalTitle').textContent = 'Modifier le revendeur';
+  document.getElementById('newMasterName').value = m.name;
+  document.getElementById('newMasterUrl').value = m.loginUrl;
+  document.getElementById('masterModal').classList.add('active');
+}
+function hideAddMaster() { document.getElementById('masterModal').classList.remove('active'); }
+async function addMaster() {
+  const name = document.getElementById('newMasterName').value.trim();
+  const loginUrl = document.getElementById('newMasterUrl').value.trim();
+  if (!name || !loginUrl) return;
+  if (editingMaster) {
+    config = await window.api.updateMaster({ masterId: editingMaster, name, loginUrl });
+  } else {
+    config = await window.api.addMaster({ name, loginUrl });
+    activeId = config.masters[config.masters.length - 1].id;
+  }
+  hideAddMaster();
+  renderAll();
+}
+
+function showAddInstance() {
+  if (!activeMaster()) return;
+  editingInstance = null;
+  document.getElementById('instanceModalTitle').textContent = 'Nouvelle école';
+  document.getElementById('newInstancePrefix').value = '';
+  document.getElementById('newInstanceUrl').value = '';
+  document.getElementById('instanceModal').classList.add('active');
+}
+function editInstance(mid, id) {
+  const m = config.masters.find(x => x.id === mid);
+  const inst = m && m.instances.find(x => x.id === id);
+  if (!inst) return;
+  editingInstance = { masterId: mid, id };
+  document.getElementById('instanceModalTitle').textContent = 'Modifier l’école';
+  document.getElementById('newInstancePrefix').value = inst.prefix;
+  document.getElementById('newInstanceUrl').value = inst.url;
+  document.getElementById('instanceModal').classList.add('active');
+}
+function hideAddInstance() { document.getElementById('instanceModal').classList.remove('active'); }
+async function addInstance() {
+  const prefix = document.getElementById('newInstancePrefix').value.trim();
+  const url = document.getElementById('newInstanceUrl').value.trim();
+  if (!prefix || !url) return;
+  if (editingInstance) {
+    config = await window.api.updateInstance({ masterId: editingInstance.masterId, id: editingInstance.id, prefix, url });
+  } else {
+    const m = activeMaster();
+    if (!m) return;
+    config = await window.api.addInstance({ masterId: m.id, prefix, url });
+  }
+  hideAddInstance();
+  renderInstances();
+}
+
+function setReason(mid, id, value) {
+  const m = config.masters.find(x => x.id === mid);
+  const inst = m && m.instances.find(x => x.id === id);
+  if (inst) inst.disabledReason = value;
+  window.api.setReason({ masterId: mid, id, reason: value });
+}
+
+function setMode(mode, silent) {
+  config.delivery.mode = mode;
+  document.getElementById('modeLocal').classList.toggle('active', mode === 'local');
+  document.getElementById('modeSlack').classList.toggle('active', mode === 'slack');
+  document.getElementById('slackFields').classList.toggle('show', mode === 'slack');
+  if (!silent) save();
+}
+async function saveDelivery() {
+  config.delivery.mode = document.getElementById('modeSlack').classList.contains('active') ? 'slack' : 'local';
+  config.delivery.botToken = document.getElementById('botToken').value.trim();
+  config.delivery.channelId = document.getElementById('channelId').value.trim();
+  await save();
+}
+
+async function launchMaster(id) {
+  await saveDelivery();
+  const res = await window.api.startScraper(id);
+  if (res && res.error) alert(res.error);
+}
+
+window.api.onScraperDone(() => {});
+init();
+</script>
+</body>
+</html>

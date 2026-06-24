@@ -1,6 +1,6 @@
 {
   "name": "apnsmaster",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Audit des certificats Jamf School par revendeur",
   "main": "main.js",
   "scripts": {

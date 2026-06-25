@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
+const { t } = require('./i18n');
 
 // Upload d'un fichier (PDF) sur Slack via l'API moderne (3 étapes).
 // Un webhook ne peut PAS envoyer de fichier : il faut un bot token (xoxb-...).
@@ -47,11 +48,14 @@ async function uploadPdf(botToken, channelId, filePath, comment) {
     return true;
 }
 
-function buildSummary(results) {
+function buildSummary(results, lang) {
     const by = (lvl) => results.filter(r => r.level === lvl).length;
     return [
-        ':rotating_light: *Audit Jamf School* — rapport en pièce jointe',
-        `🔴 ${by('CRITIQUE')} critique(s) · 🟠 ${by('URGENT')} urgent(s) · ⚠️ ${by('ATTENTION')} CGU · 🔵 ${by('LICENCE')} licence · ❌ ${by('INACCESSIBLE')} inaccessible(s) · ✅ ${by('OK')} OK`,
+        t(lang, 'slack_title'),
+        t(lang, 'slack_summary', {
+            crit: by('CRITIQUE'), urg: by('URGENT'), att: by('ATTENTION'),
+            lic: by('LICENCE'), inacc: by('INACCESSIBLE'), ok: by('OK'),
+        }),
     ].join('\n');
 }
 

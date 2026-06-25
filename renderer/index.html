@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>Jamf School Reseller Survey</title>
@@ -37,8 +37,9 @@
 
   .titlebar { position: relative; height: 40px; -webkit-app-region: drag; display: flex; align-items: center; justify-content: center; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .titlebar h1 { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: .2px; }
-  .theme-toggle { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); -webkit-app-region: no-drag; background: transparent; border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; font-size: 14px; line-height: 1; cursor: pointer; color: var(--text); }
-  .theme-toggle:hover { background: var(--bg); }
+  .tb-actions { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); display: flex; gap: 6px; -webkit-app-region: no-drag; }
+  .tb-btn { background: transparent; border: 1px solid var(--border); border-radius: 7px; padding: 4px 9px; font-size: 12px; line-height: 1; cursor: pointer; color: var(--text); min-width: 30px; }
+  .tb-btn:hover { background: var(--bg); }
 
   /* Switch */
   .switch { position: relative; display: inline-block; width: 38px; height: 22px; flex-shrink: 0; -webkit-app-region: no-drag; }
@@ -132,7 +133,10 @@
 <body>
 <div class="titlebar">
   <h1>Jamf School Reseller Survey</h1>
-  <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Basculer le thème">🌙</button>
+  <div class="tb-actions">
+    <button class="tb-btn" id="langToggle" onclick="toggleLang()">EN</button>
+    <button class="tb-btn" id="themeToggle" onclick="toggleTheme()">🌙</button>
+  </div>
 </div>
 
 <div class="tabbar" id="tabbar"></div>
@@ -140,24 +144,24 @@
 <div id="masterArea" style="display:flex; flex-direction:column; flex:1; min-height:0;">
   <div class="master-bar" id="masterBar"></div>
   <div class="subtoolbar">
-    <input type="text" id="searchInput" placeholder="Rechercher une école..." oninput="renderInstances()" />
-    <button class="btn-soft btn-sm" onclick="showAddInstance()">+ École</button>
+    <input type="text" id="searchInput" oninput="renderInstances()" />
+    <button class="btn-soft btn-sm" id="btnAddSchool" onclick="showAddInstance()"></button>
   </div>
   <div class="scroll" id="scroll"></div>
 </div>
 
 <div class="footer">
   <div class="frow">
-    <label>Livraison :</label>
+    <label id="lblDelivery"></label>
     <div class="seg">
-      <button id="modeLocal" onclick="setMode('local')">Local</button>
-      <button id="modeSlack" onclick="setMode('slack')">Slack</button>
+      <button id="modeLocal" onclick="setMode('local')"></button>
+      <button id="modeSlack" onclick="setMode('slack')"></button>
     </div>
     <div class="slack-fields" id="slackFields">
-      <input type="text" id="botToken" placeholder="Bot token (xoxb-…)  ·  scopes files:write, chat:write" />
-      <input type="text" id="channelId" placeholder="ID canal (C01…)" />
+      <input type="text" id="botToken" />
+      <input type="text" id="channelId" />
     </div>
-    <button class="btn-ghost btn-sm" onclick="saveDelivery()">Enregistrer</button>
+    <button class="btn-ghost btn-sm" id="btnSaveDelivery" onclick="saveDelivery()"></button>
     <span class="footer-info" id="footerInfo"></span>
   </div>
 </div>
@@ -165,28 +169,28 @@
 <!-- Modals -->
 <div class="modal-overlay" id="masterModal">
   <div class="modal">
-    <h2 id="masterModalTitle">Nouveau revendeur</h2>
-    <label>Nom</label>
-    <input type="text" id="newMasterName" placeholder="ex: Mon Revendeur" />
-    <label>URL de connexion (page de login SSO)</label>
+    <h2 id="masterModalTitle"></h2>
+    <label id="lblMasterName"></label>
+    <input type="text" id="newMasterName" />
+    <label id="lblMasterUrl"></label>
     <input type="text" id="newMasterUrl" placeholder="https://xxx.auth-1.jamfcloud.com/?redirect-url=xxx.jamfcloud.com" />
     <div class="modal-actions">
-      <button class="btn-ghost" onclick="hideAddMaster()">Annuler</button>
-      <button class="btn-primary" onclick="addMaster()">Ajouter</button>
+      <button class="btn-ghost" id="btnMasterCancel" onclick="hideAddMaster()"></button>
+      <button class="btn-primary" id="btnMasterSubmit" onclick="addMaster()"></button>
     </div>
   </div>
 </div>
 
 <div class="modal-overlay" id="instanceModal">
   <div class="modal">
-    <h2 id="instanceModalTitle">Nouvelle école</h2>
-    <label>Nom affiché</label>
-    <input type="text" id="newInstancePrefix" placeholder="ex: Mon École" />
-    <label>URL de l'école (jusqu'à .jamfcloud.com)</label>
+    <h2 id="instanceModalTitle"></h2>
+    <label id="lblInstanceName"></label>
+    <input type="text" id="newInstancePrefix" />
+    <label id="lblInstanceUrl"></label>
     <input type="text" id="newInstanceUrl" placeholder="https://monecole.jamfcloud.com" />
     <div class="modal-actions">
-      <button class="btn-ghost" onclick="hideAddInstance()">Annuler</button>
-      <button class="btn-primary" onclick="addInstance()">Ajouter</button>
+      <button class="btn-ghost" id="btnInstanceCancel" onclick="hideAddInstance()"></button>
+      <button class="btn-primary" id="btnInstanceSubmit" onclick="addInstance()"></button>
     </div>
   </div>
 </div>
@@ -194,7 +198,17 @@
 <script>
 let config = null;
 let activeId = null;
+let currentLang = 'en';
 
+function t(key, vars) {
+  const tr = window.api.i18n.translations;
+  const dict = tr[currentLang] || tr.en;
+  let s = dict[key] != null ? dict[key] : (tr.en[key] != null ? tr.en[key] : key);
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
+
+/* ---- Thème ---- */
 function applyTheme(theme) {
   document.body.classList.toggle('dark', theme === 'dark');
   const btn = document.getElementById('themeToggle');
@@ -206,10 +220,41 @@ function toggleTheme() {
   applyTheme(next);
 }
 (function initTheme() {
-  let t = localStorage.getItem('theme');
-  if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-  applyTheme(t);
+  let th = localStorage.getItem('theme');
+  if (!th) th = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  applyTheme(th);
 })();
+
+/* ---- Langue ---- */
+function toggleLang() {
+  currentLang = currentLang === 'fr' ? 'en' : 'fr';
+  localStorage.setItem('lang', currentLang);
+  if (config) { config.language = currentLang; save(); }
+  applyStatic();
+  renderAll();
+}
+function applyStatic() {
+  document.documentElement.lang = currentLang;
+  document.getElementById('langToggle').textContent = currentLang.toUpperCase();
+  document.getElementById('langToggle').title = t('ui_lang_toggle');
+  document.getElementById('themeToggle').title = t('ui_theme_toggle');
+  document.getElementById('searchInput').placeholder = t('ui_search_ph');
+  document.getElementById('btnAddSchool').textContent = t('ui_add_school');
+  document.getElementById('lblDelivery').textContent = t('ui_delivery');
+  document.getElementById('modeLocal').textContent = t('ui_local');
+  document.getElementById('modeSlack').textContent = t('ui_slack');
+  document.getElementById('botToken').placeholder = t('ui_bottoken_ph');
+  document.getElementById('channelId').placeholder = t('ui_channel_ph');
+  document.getElementById('btnSaveDelivery').textContent = t('ui_save');
+  document.getElementById('lblMasterName').textContent = t('ui_field_name');
+  document.getElementById('newMasterName').placeholder = t('ui_ph_reseller_name');
+  document.getElementById('lblMasterUrl').textContent = t('ui_field_login_url');
+  document.getElementById('btnMasterCancel').textContent = t('ui_cancel');
+  document.getElementById('lblInstanceName').textContent = t('ui_field_display_name');
+  document.getElementById('newInstancePrefix').placeholder = t('ui_ph_school_name');
+  document.getElementById('lblInstanceUrl').textContent = t('ui_field_school_url');
+  document.getElementById('btnInstanceCancel').textContent = t('ui_cancel');
+}
 
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
 function activeMaster() { return config.masters.find(m => m.id === activeId) || config.masters[0]; }
@@ -217,15 +262,18 @@ function activeMaster() { return config.masters.find(m => m.id === activeId) || 
 async function init() {
   try {
     config = await window.api.getConfig();
-    if (!config || config.error) { document.body.insertAdjacentHTML('beforeend', `<div class="empty">Erreur : ${config?.error || 'config introuvable'}</div>`); return; }
+    if (!config || config.error) { document.body.insertAdjacentHTML('beforeend', `<div class="empty">${t('ui_config_error', { msg: config?.error || '?' })}</div>`); return; }
+    currentLang = config.language || localStorage.getItem('lang') || 'en';
+    localStorage.setItem('lang', currentLang);
     if (!config.delivery) config.delivery = { mode: 'local', botToken: '', channelId: '' };
     document.getElementById('botToken').value = config.delivery.botToken || '';
     document.getElementById('channelId').value = config.delivery.channelId || '';
     setMode(config.delivery.mode || 'local', true);
     activeId = config.masters[0] ? config.masters[0].id : null;
+    applyStatic();
     renderAll();
   } catch (err) {
-    document.body.insertAdjacentHTML('beforeend', `<div class="empty">Erreur : ${err.message}</div>`);
+    document.body.insertAdjacentHTML('beforeend', `<div class="empty">${t('ui_config_error', { msg: err.message })}</div>`);
   }
 }
 
@@ -235,15 +283,15 @@ function renderTabs() {
   const bar = document.getElementById('tabbar');
   bar.innerHTML = '';
   config.masters.forEach(m => {
-    const t = document.createElement('div');
-    t.className = 'tab' + (m.id === activeId ? ' active' : '');
-    t.onclick = () => { activeId = m.id; renderAll(); };
-    t.innerHTML = `<span class="dot ${m.enabled ? '' : 'off'}"></span>${esc(m.name)}`;
-    bar.appendChild(t);
+    const tab = document.createElement('div');
+    tab.className = 'tab' + (m.id === activeId ? ' active' : '');
+    tab.onclick = () => { activeId = m.id; renderAll(); };
+    tab.innerHTML = `<span class="dot ${m.enabled ? '' : 'off'}"></span>${esc(m.name)}`;
+    bar.appendChild(tab);
   });
   const add = document.createElement('div');
   add.className = 'tab tab-add';
-  add.textContent = '+ Revendeur';
+  add.textContent = t('ui_add_reseller');
   add.onclick = showAddMaster;
   bar.appendChild(add);
 }
@@ -259,15 +307,15 @@ function renderMasterBar() {
       <div class="mname">${esc(m.name)}</div>
       <div class="murl">${esc(m.loginUrl)}</div>
     </div>
-    <button class="btn-primary btn-sm" onclick="launchMaster('${m.id}')">▶ Lancer la collecte</button>
-    <button class="icon-btn" title="Modifier le revendeur" onclick="editMaster('${m.id}')">✎</button>
-    <button class="btn-danger btn-sm" onclick="removeMaster('${m.id}','${esc(m.name)}')">Supprimer</button>`;
+    <button class="btn-primary btn-sm" onclick="launchMaster('${m.id}')">${t('ui_launch')}</button>
+    <button class="icon-btn" title="${t('ui_edit_reseller')}" onclick="editMaster('${m.id}')">✎</button>
+    <button class="btn-danger btn-sm" onclick="removeMaster('${m.id}','${esc(m.name)}')">${t('ui_delete')}</button>`;
 }
 
 function renderInstances() {
   const m = activeMaster();
   const scroll = document.getElementById('scroll');
-  if (!m) { scroll.innerHTML = '<div class="empty">Aucun revendeur. Cliquez « + Revendeur ».</div>'; return; }
+  if (!m) { scroll.innerHTML = `<div class="empty">${t('ui_empty_no_reseller')}</div>`; return; }
   const search = document.getElementById('searchInput').value.toLowerCase();
   const list = m.instances.filter(i => i.prefix.toLowerCase().includes(search));
 
@@ -285,17 +333,17 @@ function renderInstances() {
           <label class="chip"><input type="checkbox" ${inst.collectDep ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectDep',this.checked)">ADE</label>
           <label class="chip"><input type="checkbox" ${inst.collectNotifications ? 'checked' : ''} onchange="toggleField('${m.id}','${inst.id}','collectNotifications',this.checked)">Notifs</label>
         </div>
-        <button class="icon-btn" title="Modifier" onclick="editInstance('${m.id}','${inst.id}')">✎</button>
+        <button class="icon-btn" title="${t('ui_edit')}" onclick="editInstance('${m.id}','${inst.id}')">✎</button>
         <button class="btn-danger btn-sm" onclick="removeInstance('${m.id}','${inst.id}')">✕</button>
       </div>
       ${inst.enabled ? '' : `<div class="reason-wrap">
-        <span class="lbl">Raison :</span>
-        <input class="reason-input" placeholder="Pourquoi cette instance est-elle désactivée ? (apparaîtra dans le rapport)" value="${esc(inst.disabledReason || '')}" oninput="setReason('${m.id}','${inst.id}',this.value)">
+        <span class="lbl">${t('ui_reason_label')}</span>
+        <input class="reason-input" placeholder="${t('ui_reason_ph')}" value="${esc(inst.disabledReason || '')}" oninput="setReason('${m.id}','${inst.id}',this.value)">
       </div>`}
-    </div>`).join('') || '<div class="empty">Aucune école. Cliquez « + École ».</div>';
+    </div>`).join('') || `<div class="empty">${t('ui_empty_no_school')}</div>`;
 
   const enabled = m.instances.filter(i => i.enabled).length;
-  document.getElementById('footerInfo').textContent = `${m.name} · ${enabled}/${m.instances.length} activées`;
+  document.getElementById('footerInfo').textContent = t('ui_footer_info', { name: m.name, enabled, total: m.instances.length });
 }
 
 async function save() { await window.api.saveConfig(config); }
@@ -305,28 +353,30 @@ function toggleInstance(mid, id, v) { const m = config.masters.find(x => x.id ==
 function toggleField(mid, id, f, v) { const m = config.masters.find(x => x.id === mid); const i = m && m.instances.find(x => x.id === id); if (i) i[f] = v; save(); }
 
 async function removeMaster(id, name) {
-  if (!confirm(`Supprimer le revendeur « ${name} » et toutes ses écoles ?`)) return;
+  if (!confirm(t('ui_confirm_delete_reseller', { name }))) return;
   config = await window.api.removeMaster(id);
   if (activeId === id) activeId = config.masters[0] ? config.masters[0].id : null;
   renderAll();
 }
 async function removeInstance(mid, id) { config = await window.api.removeInstance({ masterId: mid, id }); renderInstances(); }
 
-let editingMaster = null;   // null = ajout, sinon id du maître édité
-let editingInstance = null; // null = ajout, sinon {masterId, id}
+let editingMaster = null;
+let editingInstance = null;
 
 function showAddMaster() {
   editingMaster = null;
-  document.getElementById('masterModalTitle').textContent = 'Nouveau revendeur';
+  document.getElementById('masterModalTitle').textContent = t('ui_modal_new_reseller');
+  document.getElementById('btnMasterSubmit').textContent = t('ui_add');
   document.getElementById('newMasterName').value = '';
-  document.getElementById('newMasterUrl').value = '';
+  document.getElementById('newMasterUrl').value = 'https://';
   document.getElementById('masterModal').classList.add('active');
 }
 function editMaster(id) {
   const m = config.masters.find(x => x.id === id);
   if (!m) return;
   editingMaster = id;
-  document.getElementById('masterModalTitle').textContent = 'Modifier le revendeur';
+  document.getElementById('masterModalTitle').textContent = t('ui_modal_edit_reseller');
+  document.getElementById('btnMasterSubmit').textContent = t('ui_save_changes');
   document.getElementById('newMasterName').value = m.name;
   document.getElementById('newMasterUrl').value = m.loginUrl;
   document.getElementById('masterModal').classList.add('active');
@@ -335,7 +385,7 @@ function hideAddMaster() { document.getElementById('masterModal').classList.remo
 async function addMaster() {
   const name = document.getElementById('newMasterName').value.trim();
   const loginUrl = document.getElementById('newMasterUrl').value.trim();
-  if (!name || !loginUrl) return;
+  if (!name || !loginUrl || loginUrl === 'https://') return;
   if (editingMaster) {
     config = await window.api.updateMaster({ masterId: editingMaster, name, loginUrl });
   } else {
@@ -349,9 +399,10 @@ async function addMaster() {
 function showAddInstance() {
   if (!activeMaster()) return;
   editingInstance = null;
-  document.getElementById('instanceModalTitle').textContent = 'Nouvelle école';
+  document.getElementById('instanceModalTitle').textContent = t('ui_modal_new_school');
+  document.getElementById('btnInstanceSubmit').textContent = t('ui_add');
   document.getElementById('newInstancePrefix').value = '';
-  document.getElementById('newInstanceUrl').value = '';
+  document.getElementById('newInstanceUrl').value = 'https://';
   document.getElementById('instanceModal').classList.add('active');
 }
 function editInstance(mid, id) {
@@ -359,7 +410,8 @@ function editInstance(mid, id) {
   const inst = m && m.instances.find(x => x.id === id);
   if (!inst) return;
   editingInstance = { masterId: mid, id };
-  document.getElementById('instanceModalTitle').textContent = 'Modifier l’école';
+  document.getElementById('instanceModalTitle').textContent = t('ui_modal_edit_school');
+  document.getElementById('btnInstanceSubmit').textContent = t('ui_save_changes');
   document.getElementById('newInstancePrefix').value = inst.prefix;
   document.getElementById('newInstanceUrl').value = inst.url;
   document.getElementById('instanceModal').classList.add('active');
@@ -368,7 +420,7 @@ function hideAddInstance() { document.getElementById('instanceModal').classList.
 async function addInstance() {
   const prefix = document.getElementById('newInstancePrefix').value.trim();
   const url = document.getElementById('newInstanceUrl').value.trim();
-  if (!prefix || !url) return;
+  if (!prefix || !url || url === 'https://') return;
   if (editingInstance) {
     config = await window.api.updateInstance({ masterId: editingInstance.masterId, id: editingInstance.id, prefix, url });
   } else {

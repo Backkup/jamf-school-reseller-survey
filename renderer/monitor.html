@@ -42,37 +42,51 @@
 </head>
 <body>
 <div class="header">
-  <h1>Collecte en cours</h1>
-  <div class="subtitle" id="subtitle">Initialisation...</div>
+  <h1 id="hTitle"></h1>
+  <div class="subtitle" id="subtitle"></div>
 </div>
 
 <div class="progress-bar-wrap">
   <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
-  <div class="progress-label" id="progressLabel">0 / 0 instances traitées</div>
+  <div class="progress-label" id="progressLabel"></div>
 </div>
 
 <div class="log-area" id="logArea"></div>
 
 <div class="status-bar">
-  <span><span class="status-dot" id="statusDot"></span><span id="statusText">En cours...</span></span>
+  <span><span class="status-dot" id="statusDot"></span><span id="statusText"></span></span>
   <span id="statsText"></span>
 </div>
 
 <script>
 // window.api exposé via preload.js
+const currentLang = localStorage.getItem('lang') || 'en';
+function t(key, vars) {
+  const tr = window.api.i18n.translations;
+  const dict = tr[currentLang] || tr.en;
+  let s = dict[key] != null ? dict[key] : (tr.en[key] != null ? tr.en[key] : key);
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(vars[k]);
+  return s;
+}
+const locale = t('rep_lang_locale');
 
 (function applyTheme() {
-  let t = localStorage.getItem('theme');
-  if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-  document.body.classList.toggle('dark', t === 'dark');
+  let th = localStorage.getItem('theme');
+  if (!th) th = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  document.body.classList.toggle('dark', th === 'dark');
 })();
+
+document.documentElement.lang = currentLang;
+document.getElementById('hTitle').textContent = t('mon_title');
+document.getElementById('subtitle').textContent = t('mon_init');
+document.getElementById('statusText').textContent = t('mon_inprogress');
 
 let total = 0;
 let processed = 0;
 let stats = { ok: 0, warning: 0, error: 0 };
 
 function now() {
-  return new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date().toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function addLog(icon, type, html) {
@@ -87,16 +101,17 @@ function addLog(icon, type, html) {
 function updateProgress() {
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
   document.getElementById('progressFill').style.width = pct + '%';
-  document.getElementById('progressLabel').textContent = `${processed} / ${total} instances traitées`;
+  document.getElementById('progressLabel').textContent = t('mon_progress', { done: processed, total });
 }
+updateProgress();
 
 window.api.onProgress((event) => {
   switch (event.type) {
     case 'start':
       total = event.total;
-      document.getElementById('subtitle').textContent = `${total} instances · ${event.masters || 1} maître(s)`;
+      document.getElementById('subtitle').textContent = t('mon_start_subtitle', { total, masters: event.masters || 1 });
       updateProgress();
-      addLog('🚀', 'info', `Collecte démarrée — <strong>${total} instances</strong> sur ${event.masters || 1} maître(s)`);
+      addLog('🚀', 'info', t('mon_start_log', { total, masters: event.masters || 1 }));
       break;
 
     case 'log':
@@ -105,7 +120,7 @@ window.api.onProgress((event) => {
 
     case 'instance':
       document.getElementById('subtitle').textContent = `${event.master ? event.master + ' · ' : ''}${event.prefix}`;
-      addLog('🔍', 'info', `Analyse de <strong>${event.prefix}</strong>${event.master ? ` <span style="color:#5a7a9e">(${event.master})</span>` : ''}...`);
+      addLog('🔍', 'info', t('mon_analyzing', { prefix: `<strong>${event.prefix}</strong>` }) + (event.master ? ` <span style="color:var(--muted)">(${event.master})</span>` : ''));
       break;
 
     case 'status':
@@ -114,15 +129,15 @@ window.api.onProgress((event) => {
 
     case 'result': {
       const r = event.result;
-      const fmt = (iso) => new Date(iso).toLocaleDateString('fr-FR');
+      const fmt = (iso) => new Date(iso).toLocaleDateString(locale);
       const bits = [];
-      if (r.apns) bits.push(`APNs ${fmt(r.apns.date)} (J-${r.apns.daysLeft})`);
-      if (r.vpp && r.vpp.expired) bits.push('VPP expiré');
-      else if (r.vpp) bits.push(`VPP ${fmt(r.vpp.date)} (J-${r.vpp.daysLeft})`);
-      if (r.dep && r.dep.cgu) bits.push('CGU Apple');
-      else if (r.dep) bits.push(`DEP ${fmt(r.dep.date)}`);
-      if (r.locked) bits.push('VERROUILLÉE');
-      if (r.notifications && r.notifications.length) bits.push(`${r.notifications.length} notif.`);
+      if (r.apns) bits.push(t('mon_d_apns', { date: fmt(r.apns.date), dminus: t('rep_dminus', { n: r.apns.daysLeft }) }));
+      if (r.vpp && r.vpp.expired) bits.push(t('mon_d_vpp_expired'));
+      else if (r.vpp) bits.push(t('mon_d_vpp', { date: fmt(r.vpp.date), dminus: t('rep_dminus', { n: r.vpp.daysLeft }) }));
+      if (r.dep && r.dep.cgu) bits.push(t('mon_d_cgu'));
+      else if (r.dep) bits.push(t('mon_d_dep', { date: fmt(r.dep.date) }));
+      if (r.locked) bits.push(t('mon_d_locked'));
+      if (r.notifications && r.notifications.length) bits.push(t('mon_d_notif', { n: r.notifications.length }));
       const detail = bits.join(' · ') || (r.error || '—');
 
       const map = {
@@ -132,6 +147,7 @@ window.api.onProgress((event) => {
         LICENCE:      ['🔵', 'notification', () => stats.warning++],
         INACCESSIBLE: ['❌', 'error',        () => stats.error++],
         OK:           ['✅', 'success',      () => stats.ok++],
+        DESACTIVE:    ['⏸️', 'info',         () => {}],
       };
       const [icon, type, bump] = map[r.level] || map.OK;
       bump();
@@ -144,7 +160,7 @@ window.api.onProgress((event) => {
 
     case 'error':
       stats.error++;
-      addLog('❌', 'error', `<strong>${event.prefix}</strong> — Erreur : ${event.message}`);
+      addLog('❌', 'error', `<strong>${event.prefix}</strong> — ${event.message}`);
       updateStats();
       break;
   }
@@ -152,25 +168,25 @@ window.api.onProgress((event) => {
 
 window.api.onDone((result) => {
   document.getElementById('statusDot').classList.add('done');
-  document.getElementById('statusText').textContent = 'Audit terminé';
+  document.getElementById('statusText').textContent = t('mon_done');
   document.getElementById('progressFill').style.width = '100%';
-  document.getElementById('progressLabel').textContent = `${total} / ${total} instances traitées`;
+  document.getElementById('progressLabel').textContent = t('mon_progress', { done: total, total });
 
   if (result.success) {
     const reports = result.reports || [];
     document.getElementById('subtitle').textContent =
-      result.mode === 'slack' ? `${reports.length} rapport(s) publié(s) sur Slack` : `${reports.length} rapport(s) PDF généré(s)`;
-    addLog('✅', 'success', `<strong>Audit terminé</strong> — ${total} instance(s) sur ${reports.length} maître(s)`);
+      result.mode === 'slack' ? t('mon_reports_slack', { n: reports.length }) : t('mon_reports_local', { n: reports.length });
+    addLog('✅', 'success', t('mon_done_audit', { total, reports: reports.length }));
     reports.forEach(r => {
       if (r.delivered === 'slack') {
-        addLog('📤', 'success', `<strong>${r.master}</strong> — publié sur Slack (copie : ${r.pdfPath})`);
+        addLog('📤', 'success', t('mon_report_slack_line', { master: `<strong>${r.master}</strong>`, path: r.pdfPath }));
       } else {
-        addLog('📄', 'success', `<strong>${r.master}</strong> — ${r.pdfPath}`);
+        addLog('📄', 'success', t('mon_report_local_line', { master: `<strong>${r.master}</strong>`, path: r.pdfPath }));
       }
     });
   } else {
-    document.getElementById('subtitle').textContent = 'Échec';
-    addLog('❌', 'error', `Erreur critique : ${result.error}`);
+    document.getElementById('subtitle').textContent = t('mon_failed');
+    addLog('❌', 'error', t('mon_critical_error', { error: result.error }));
   }
   updateStats();
 });

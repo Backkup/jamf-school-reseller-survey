@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { translations, detectLang } = require('./i18n');
 
 contextBridge.exposeInMainWorld('api', {
+    i18n: { translations, detectLang },
     getConfig: () => ipcRenderer.invoke('get-config'),
     saveConfig: (config) => ipcRenderer.invoke('save-config', config),
     addMaster: (master) => ipcRenderer.invoke('add-master', master),

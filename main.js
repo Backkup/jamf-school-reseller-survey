@@ -4,6 +4,7 @@ const fs = require('fs');
 const { collectMaster } = require('./scraper');
 const { generatePdf } = require('./report');
 const { uploadPdf, buildSummary } = require('./slack');
+const { t, detectLang } = require('./i18n');
 
 // En dev : le fichier du dépôt (modifiable directement).
 // En production (.app) : le bundle est en lecture seule → on persiste dans le
@@ -54,6 +55,7 @@ function createMainWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            sandbox: false,
             preload: path.join(__dirname, 'preload.js'),
         },
         title: 'Jamf School Reseller Survey',
@@ -68,6 +70,7 @@ function createMonitorWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            sandbox: false,
             preload: path.join(__dirname, 'preload.js'),
         },
         title: 'Jamf School Reseller Survey — Collecte',
@@ -110,7 +113,7 @@ function openLoginWindow(loginUrl) {
 
         loginWindow.on('closed', () => {
             loginWindow = null;
-            if (!resolved) reject(new Error('Fenêtre de connexion fermée avant connexion'));
+            if (!resolved) reject(new Error('err_login_closed'));
         });
     });
 }
@@ -122,7 +125,14 @@ app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) creat
 // ---- IPC config ----
 
 ipcMain.handle('get-config', () => {
-    try { return loadConfig(); }
+    try {
+        const config = loadConfig();
+        if (!config.language) {
+            config.language = detectLang(app.getLocale()); // anglais par défaut, fr si appareil en français
+            saveConfig(config);
+        }
+        return config;
+    }
     catch (err) { return { error: err.message, masters: [], delivery: { mode: 'local' } }; }
 });
 
@@ -198,16 +208,17 @@ ipcMain.handle('set-reason', (_, { masterId, id, reason }) => {
 // ---- IPC collecte ----
 
 ipcMain.handle('start-scraper', async (_, opts) => {
-    if (scraperRunning) return { error: 'Collecte déjà en cours' };
+    const config = loadConfig();
+    const lang = config.language || detectLang(app.getLocale());
+    if (scraperRunning) return { error: t(lang, 'err_busy') };
 
     const masterId = opts && opts.masterId;
-    const config = loadConfig();
     let masters = config.masters || [];
     masters = masterId
         ? masters.filter(m => m.id === masterId)
         : masters.filter(m => m.enabled);
     masters = masters.filter(m => (m.instances || []).some(i => i.enabled));
-    if (!masters.length) return { error: 'Aucune instance à collecter (maître désactivé ou aucune instance activée)' };
+    if (!masters.length) return { error: t(lang, 'err_no_instances') };
 
     if (!monitorWindow) createMonitorWindow();
     await new Promise(r => setTimeout(r, 400));
@@ -224,7 +235,7 @@ ipcMain.handle('start-scraper', async (_, opts) => {
         const reports = []; // { master, pdfPath, delivered }
 
         for (const master of masters) {
-            send({ type: 'log', message: `Connexion à « ${master.name} »...` });
+            send({ type: 'log', message: t(lang, 'log_connecting', { name: master.name }) });
             const win = await openLoginWindow(master.loginUrl);
 
             // Workers parallèles partageant la session SSO (cookies de la session
@@ -236,9 +247,9 @@ ipcMain.handle('start-scraper', async (_, opts) => {
                 extraWins.push(new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } }));
             }
             const workers = [win.webContents, ...extraWins.map(w => w.webContents)];
-            send({ type: 'log', message: `Connecté à « ${master.name} » — collecte parallèle sur ${concurrency} fenêtre(s)...` });
+            send({ type: 'log', message: t(lang, 'log_connected', { name: master.name, n: concurrency }) });
 
-            const results = await collectMaster(workers, master, send);
+            const results = await collectMaster(workers, master, send, lang);
 
             extraWins.forEach(w => { if (!w.isDestroyed()) w.close(); });
 
@@ -258,17 +269,17 @@ ipcMain.handle('start-scraper', async (_, opts) => {
             if (loginWindow && !loginWindow.isDestroyed()) { loginWindow.close(); loginWindow = null; }
 
             // Un rapport PDF propre à ce maître
-            send({ type: 'log', message: `Génération du rapport PDF pour « ${master.name} »...` });
-            const pdfPath = await generatePdf(results, master.name);
+            send({ type: 'log', message: t(lang, 'log_generating', { name: master.name }) });
+            const pdfPath = await generatePdf(results, master.name, lang);
 
             let delivered = 'local';
             if (delivery.mode === 'slack') {
                 try {
-                    await uploadPdf(delivery.botToken, delivery.channelId, pdfPath, `*${master.name}* — ${buildSummary(results)}`);
+                    await uploadPdf(delivery.botToken, delivery.channelId, pdfPath, `*${master.name}* — ${buildSummary(results, lang)}`);
                     delivered = 'slack';
-                    send({ type: 'log', message: `« ${master.name} » publié sur Slack.` });
+                    send({ type: 'log', message: t(lang, 'log_slack_ok', { name: master.name }) });
                 } catch (err) {
-                    send({ type: 'error', prefix: 'Slack', message: `${master.name} : ${err.message} — PDF conservé en local.` });
+                    send({ type: 'error', prefix: 'Slack', message: t(lang, 'err_slack_fail', { name: master.name, err: err.message }) });
                     shell.openPath(pdfPath);
                 }
             } else {
@@ -287,10 +298,11 @@ ipcMain.handle('start-scraper', async (_, opts) => {
     } catch (err) {
         scraperRunning = false;
         if (loginWindow && !loginWindow.isDestroyed()) { loginWindow.close(); loginWindow = null; }
-        send({ type: 'error', prefix: 'Collecte', message: err.message });
-        const done = { success: false, error: err.message };
+        const msg = t(lang, err.message); // traduit si err.message est une clé connue, sinon tel quel
+        send({ type: 'error', prefix: 'Collecte', message: msg });
+        const done = { success: false, error: msg };
         if (monitorWindow) monitorWindow.webContents.send('done', done);
         if (mainWindow) mainWindow.webContents.send('scraper-done', done);
-        return { error: err.message };
+        return { error: msg };
     }
 });

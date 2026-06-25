@@ -1,3 +1,5 @@
+const { t } = require('./i18n');
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +69,7 @@ function isLockedOrInaccessible(url) {
 // Collecte d'une école : APNs, VPP, DEP/ADE, notifications (toggles séparés)
 // ---------------------------------------------------------------------------
 
-async function collectInstance(wc, inst, masterName) {
+async function collectInstance(wc, inst, masterName, lang) {
     const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
     const result = {
         master: masterName || '',
@@ -88,7 +90,7 @@ async function collectInstance(wc, inst, masterName) {
             result.locked = true;
         } else if (state === 'inaccessible') {
             result.inaccessible = true;
-            result.error = 'Session expirée ou accès refusé';
+            result.error = t(lang, 'err_session');
         } else if (/surutilisation|0 licence/i.test(text)) {
             result.overuse = true;
         } else {
@@ -166,7 +168,7 @@ function computeLevel(r) {
 // se répartissent les écoles via une file de travail commune.
 // ---------------------------------------------------------------------------
 
-async function collectMaster(workers, master, onProgress) {
+async function collectMaster(workers, master, onProgress, lang) {
     const queue = (master.instances || []).filter(i => i.enabled);
     const results = [];
     let idx = 0; // incrément synchrone = work-stealing sûr (JS mono-thread)
@@ -180,7 +182,7 @@ async function collectMaster(workers, master, onProgress) {
             onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
             let result;
             try {
-                result = await collectInstance(wc, inst, master.name);
+                result = await collectInstance(wc, inst, master.name, lang);
             } catch (err) {
                 result = { master: master.name, prefix: inst.prefix, error: err.message, level: 'INACCESSIBLE', notifications: [] };
             }

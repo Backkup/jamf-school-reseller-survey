@@ -30,6 +30,7 @@
       "report.js",
       "slack.js",
       "preload.js",
+      "i18n.js",
       "renderer/**/*",
       "data/**/*",
       "node_modules/**/*"

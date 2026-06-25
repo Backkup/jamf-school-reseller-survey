@@ -1,4 +1,8 @@
-# Jamf School Reseller Survey
+<p align="center">
+  <img src="build/icon.png" width="140" alt="Icône Jamf School Reseller Survey">
+</p>
+
+<h1 align="center">Jamf School Reseller Survey</h1>
 
 Application **Electron pour macOS** qui audite automatiquement les instances **Jamf School** d'un ou plusieurs revendeurs, puis génère un **rapport PDF compact** orienté action.
 

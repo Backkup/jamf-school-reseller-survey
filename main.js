@@ -118,7 +118,14 @@ function openLoginWindow(loginUrl) {
     });
 }
 
-app.whenReady().then(() => { initConfigPath(); createMainWindow(); });
+app.whenReady().then(() => {
+    // En dev, l'icône du Dock vient du PNG (en prod, c'est le .icns du bundle).
+    if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
+        try { app.dock.setIcon(path.join(__dirname, 'build', 'icon.png')); } catch {}
+    }
+    initConfigPath();
+    createMainWindow();
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 

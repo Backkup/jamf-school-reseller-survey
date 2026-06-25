@@ -1,6 +1,6 @@
 {
   "name": "apnsmaster",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Audit des certificats Jamf School par revendeur",
   "main": "main.js",
   "scripts": {
@@ -22,6 +22,7 @@
     "productName": "Jamf School Reseller Survey",
     "mac": {
       "category": "public.app-category.utilities",
+      "icon": "build/icon.icns",
       "target": "dir"
     },
     "files": [

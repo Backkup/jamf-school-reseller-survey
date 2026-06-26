@@ -116,6 +116,17 @@ function openLoginWindow(loginUrl, partition) {
     });
 }
 
+// Efface les données de navigation de la collecte (cookies SSO, cache, stockages)
+// pour que la session Jamf NE persiste PAS entre deux collectes. On préserve le
+// localStorage (préférences thème/langue de l'interface).
+async function clearBrowsingData() {
+    try {
+        const ses = session.defaultSession;
+        await ses.clearStorageData({ storages: ['cookies', 'cachestorage', 'serviceworkers', 'indexdb', 'websql', 'filesystem'] });
+        await ses.clearCache();
+    } catch { /* non bloquant */ }
+}
+
 app.whenReady().then(() => {
     // En dev, l'icône du Dock vient du PNG (en prod, c'est le .icns du bundle).
     if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
@@ -301,6 +312,7 @@ ipcMain.handle('start-scraper', async (_, opts) => {
             if (stopRequested) break; // arrêt demandé : on ne traite pas les revendeurs suivants
         }
 
+        await clearBrowsingData(); // fin de session : on efface les cookies SSO (pas de persistance entre 2 tirs)
         scraperRunning = false;
         const done = { success: true, reports, mode: delivery.mode, stopped: stopRequested };
         if (monitorWindow) monitorWindow.webContents.send('done', done);
@@ -310,6 +322,7 @@ ipcMain.handle('start-scraper', async (_, opts) => {
     } catch (err) {
         scraperRunning = false;
         if (loginWindow && !loginWindow.isDestroyed()) { loginWindow.close(); loginWindow = null; }
+        await clearBrowsingData();
         const msg = t(lang, err.message); // traduit si err.message est une clé connue, sinon tel quel
         send({ type: 'error', prefix: 'Collecte', message: msg });
         const done = { success: false, error: msg };

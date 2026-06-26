@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { collectMaster } = require('./scraper');
@@ -20,14 +20,12 @@ function initConfigPath() {
     }
 }
 
-// Nombre maximum de fenêtres collectant en parallèle par revendeur.
-// 4 = bon compromis vitesse / charge serveur Jamf.
-const MAX_CONCURRENCY = 4;
 
 let mainWindow;
 let monitorWindow;
 let loginWindow;
 let scraperRunning = false;
+let stopRequested = false;
 
 function loadConfig() {
     return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -79,18 +77,18 @@ function createMonitorWindow() {
     monitorWindow.on('closed', () => { monitorWindow = null; });
 }
 
-function openLoginWindow(loginUrl) {
+function openLoginWindow(loginUrl, partition) {
     return new Promise((resolve, reject) => {
         loginWindow = new BrowserWindow({
             width: 1000,
             height: 720,
             title: 'Connexion Jamf School — laissez cette fenêtre ouverte',
-            webPreferences: { nodeIntegration: false, contextIsolation: true },
+            webPreferences: { nodeIntegration: false, contextIsolation: true, partition },
         });
 
         loginWindow.webContents.setWindowOpenHandler(({ url }) => {
             if (/google\.com|accounts\.google|microsoftonline|okta|auth/i.test(url)) {
-                return { action: 'allow', overrideBrowserWindowOptions: { width: 600, height: 720, webPreferences: { nodeIntegration: false, contextIsolation: true } } };
+                return { action: 'allow', overrideBrowserWindowOptions: { width: 600, height: 720, webPreferences: { nodeIntegration: false, contextIsolation: true, partition } } };
             }
             return { action: 'allow' };
         });
@@ -214,10 +212,16 @@ ipcMain.handle('set-reason', (_, { masterId, id, reason }) => {
 
 // ---- IPC collecte ----
 
+ipcMain.handle('stop-scraper', () => {
+    if (scraperRunning) stopRequested = true;
+    return { ok: true };
+});
+
 ipcMain.handle('start-scraper', async (_, opts) => {
     const config = loadConfig();
     const lang = config.language || detectLang(app.getLocale());
     if (scraperRunning) return { error: t(lang, 'err_busy') };
+    stopRequested = false;
 
     const masterId = opts && opts.masterId;
     let masters = config.masters || [];
@@ -243,22 +247,20 @@ ipcMain.handle('start-scraper', async (_, opts) => {
 
         for (const master of masters) {
             send({ type: 'log', message: t(lang, 'log_connecting', { name: master.name }) });
+
             const win = await openLoginWindow(master.loginUrl);
+            // Laisse la session SSO s'établir complètement avant de lancer la collecte.
+            await new Promise(r => setTimeout(r, 1200));
 
-            // Workers parallèles partageant la session SSO (cookies de la session
-            // par défaut, communs à toutes les BrowserWindow sans partition).
-            const enabledCount = master.instances.filter(i => i.enabled).length;
-            const concurrency = Math.max(1, Math.min(MAX_CONCURRENCY, enabledCount));
-            const extraWins = [];
-            for (let k = 1; k < concurrency; k++) {
-                extraWins.push(new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } }));
-            }
-            const workers = [win.webContents, ...extraWins.map(w => w.webContents)];
-            send({ type: 'log', message: t(lang, 'log_connected', { name: master.name, n: concurrency }) });
+            // Collecte en FENÊTRE UNIQUE (séquentielle). Pas de parallélisme :
+            // une seule fenêtre conserve la session SSO d'une école à l'autre.
+            const workers = [win.webContents];
+            send({ type: 'log', message: t(lang, 'log_connected', { name: master.name, n: 1 }) });
 
-            const results = await collectMaster(workers, master, send, lang);
+            const results = await collectMaster(workers, master, send, lang, () => stopRequested);
 
-            extraWins.forEach(w => { if (!w.isDestroyed()) w.close(); });
+            // Si aucune donnée collectée et arrêt immédiat, on saute le rapport.
+            const collectedSomething = results.length > 0;
 
             // Inclure les instances désactivées (avec leur raison) dans le rapport
             master.instances.filter(i => !i.enabled).forEach(i => {
@@ -275,29 +277,32 @@ ipcMain.handle('start-scraper', async (_, opts) => {
 
             if (loginWindow && !loginWindow.isDestroyed()) { loginWindow.close(); loginWindow = null; }
 
-            // Un rapport PDF propre à ce maître
-            send({ type: 'log', message: t(lang, 'log_generating', { name: master.name }) });
-            const pdfPath = await generatePdf(results, master.name, lang);
+            // Rapport (partiel si arrêt, tant qu'au moins une école a été collectée)
+            if (collectedSomething) {
+                send({ type: 'log', message: t(lang, 'log_generating', { name: master.name }) });
+                const pdfPath = await generatePdf(results, master.name, lang);
 
-            let delivered = 'local';
-            if (delivery.mode === 'slack') {
-                try {
-                    await uploadPdf(delivery.botToken, delivery.channelId, pdfPath, `*${master.name}* — ${buildSummary(results, lang)}`);
-                    delivered = 'slack';
-                    send({ type: 'log', message: t(lang, 'log_slack_ok', { name: master.name }) });
-                } catch (err) {
-                    send({ type: 'error', prefix: 'Slack', message: t(lang, 'err_slack_fail', { name: master.name, err: err.message }) });
+                let delivered = 'local';
+                if (delivery.mode === 'slack') {
+                    try {
+                        await uploadPdf(delivery.botToken, delivery.channelId, pdfPath, `*${master.name}* — ${buildSummary(results, lang)}`);
+                        delivered = 'slack';
+                        send({ type: 'log', message: t(lang, 'log_slack_ok', { name: master.name }) });
+                    } catch (err) {
+                        send({ type: 'error', prefix: 'Slack', message: t(lang, 'err_slack_fail', { name: master.name, err: err.message }) });
+                        shell.openPath(pdfPath);
+                    }
+                } else {
                     shell.openPath(pdfPath);
                 }
-            } else {
-                shell.openPath(pdfPath);
+                reports.push({ master: master.name, pdfPath, delivered });
             }
 
-            reports.push({ master: master.name, pdfPath, delivered });
+            if (stopRequested) break; // arrêt demandé : on ne traite pas les revendeurs suivants
         }
 
         scraperRunning = false;
-        const done = { success: true, reports, mode: delivery.mode };
+        const done = { success: true, reports, mode: delivery.mode, stopped: stopRequested };
         if (monitorWindow) monitorWindow.webContents.send('done', done);
         if (mainWindow) mainWindow.webContents.send('scraper-done', done);
         return { ok: true };

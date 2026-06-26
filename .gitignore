@@ -14,3 +14,4 @@ data/instances.local.json
 
 # OS
 .DS_Store
+graphify-out/

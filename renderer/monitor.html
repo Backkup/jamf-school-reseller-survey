@@ -37,7 +37,11 @@
   .status-bar { padding: 10px 20px; background: var(--surface); border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); display: inline-block; margin-right: 6px; animation: pulse 1s infinite; }
   .status-dot.done { background: var(--green); animation: none; }
+  .status-dot.stopped { background: var(--red); animation: none; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .btn-stop { font-family: inherit; background: transparent; border: 1px solid #eadcd7; color: #b3543f; border-radius: 7px; padding: 5px 14px; font-size: 12px; font-weight: 500; cursor: pointer; }
+  .btn-stop:hover:not(:disabled) { background: #fbf0ec; }
+  .btn-stop:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body>
@@ -55,7 +59,10 @@
 
 <div class="status-bar">
   <span><span class="status-dot" id="statusDot"></span><span id="statusText"></span></span>
-  <span id="statsText"></span>
+  <span style="display:flex; align-items:center; gap:14px">
+    <span id="statsText"></span>
+    <button class="btn-stop" id="stopBtn" onclick="requestStop()"></button>
+  </span>
 </div>
 
 <script>
@@ -80,6 +87,16 @@ document.documentElement.lang = currentLang;
 document.getElementById('hTitle').textContent = t('mon_title');
 document.getElementById('subtitle').textContent = t('mon_init');
 document.getElementById('statusText').textContent = t('mon_inprogress');
+document.getElementById('stopBtn').textContent = t('mon_stop');
+
+let finished = false;
+function requestStop() {
+  const btn = document.getElementById('stopBtn');
+  btn.disabled = true;
+  btn.textContent = t('mon_stopping');
+  document.getElementById('statusText').textContent = t('mon_stopping');
+  window.api.stopScraper();
+}
 
 let total = 0;
 let processed = 0;
@@ -167,10 +184,17 @@ window.api.onProgress((event) => {
 });
 
 window.api.onDone((result) => {
-  document.getElementById('statusDot').classList.add('done');
-  document.getElementById('statusText').textContent = t('mon_done');
-  document.getElementById('progressFill').style.width = '100%';
-  document.getElementById('progressLabel').textContent = t('mon_progress', { done: total, total });
+  finished = true;
+  const stopBtn = document.getElementById('stopBtn');
+  stopBtn.style.display = 'none';
+
+  const dot = document.getElementById('statusDot');
+  dot.classList.remove('done', 'stopped');
+  dot.classList.add(result.stopped ? 'stopped' : 'done');
+  document.getElementById('statusText').textContent = result.stopped ? t('mon_stopped') : t('mon_done');
+  if (!result.stopped) document.getElementById('progressFill').style.width = '100%';
+
+  if (result.stopped) addLog('🛑', 'error', t('mon_stopped'));
 
   if (result.success) {
     const reports = result.reports || [];

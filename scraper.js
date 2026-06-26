@@ -3,47 +3,56 @@ const { t } = require('./i18n');
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
-// Navigation dans une fenêtre Electron authentifiée (SPA Vue.js : il faut
-// réellement naviguer, fetch() ne renvoie que le squelette).
-//
-// loadAndExtract charge l'URL puis attend (poll 150 ms) qu'une condition
-// « page prête » soit vraie, et renvoie en UN SEUL aller-retour { url, ts, text }.
-// La condition court-circuite les pages /extend.html (verrou) et /auth pour
-// éviter d'attendre le timeout complet.
+// Navigation (version d'origine validée) : on charge l'URL puis on attend
+// patiemment qu'un sélecteur apparaisse (poll 300 ms), en laissant les
+// redirections SSO se terminer. Aucune logique d'auth/retry/parallélisme.
 // ---------------------------------------------------------------------------
 
-const POLL = 150;
+const POLL = 300;
 
-async function loadAndExtract(wc, url, readyExpr, timeout) {
-    try { await wc.loadURL(url); } catch { /* abort/redirection SSO : non bloquant */ }
+const LOGIN_WAIT = 180000; // 3 min pour se connecter manuellement si Jamf le demande
 
-    const probe = `(() => {
-        const ready = (${readyExpr});
-        if (!ready) return null;
-        const t = document.querySelector('time[datetime]');
-        return { url: location.href, ts: t ? parseInt(t.getAttribute('datetime'), 10) : null, text: document.body ? document.body.innerText : '' };
-    })()`;
-
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+async function waitForSelector(wc, selector, timeout, stop, onLogin) {
+    let deadline = Date.now() + timeout;
+    let prompted = false;
+    while (Date.now() < deadline) {
         if (wc.isDestroyed()) throw new Error('Fenêtre fermée');
+        if (stop && stop()) return false;
         try {
-            const data = await wc.executeJavaScript(probe);
-            if (data) return data;
+            const s = await wc.executeJavaScript(
+                `(() => ({ ok: !!document.querySelector(${JSON.stringify(selector)}), login: (!!document.querySelector('input[type="password"]') || /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)) }))()`
+            );
+            if (s && s.ok) return true;
+            // Jamf affiche une page de connexion : on prévient et on laisse 3 min.
+            if (s && s.login && !prompted) {
+                prompted = true;
+                if (onLogin) onLogin();
+                deadline = Date.now() + LOGIN_WAIT;
+            }
         } catch { /* navigation en cours */ }
         await sleep(POLL);
     }
-    // Timeout : renvoyer l'état courant quel qu'il soit
-    try {
-        return await wc.executeJavaScript(
-            `({ url: location.href, ts: (document.querySelector('time[datetime]') ? parseInt(document.querySelector('time[datetime]').getAttribute('datetime'),10) : null), text: document.body ? document.body.innerText : '' })`
-        );
-    } catch { return { url: '', ts: null, text: '' }; }
+    return false;
 }
 
-const READY_LOCK = `/extend\\.html|\\/auth|\\/login|signin/i.test(location.href)`;
-const READY_APNS = `!!document.querySelector('time[datetime]') || ${READY_LOCK}`;
-const READY_CERT = `!!document.querySelector('time[datetime]') || !!document.querySelector('.content, main') || ${READY_LOCK}`;
+async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
+    try { await wc.loadURL(url); } catch { /* redirection / abort SSO : non bloquant */ }
+    return waitForSelector(wc, selector, timeout, stop, onLogin);
+}
+
+async function currentUrl(wc) {
+    try { return await wc.executeJavaScript('location.href'); } catch { return ''; }
+}
+async function pageText(wc) {
+    try { return await wc.executeJavaScript('document.body ? document.body.innerText : ""'); } catch { return ''; }
+}
+async function firstTimeTimestamp(wc) {
+    try {
+        return await wc.executeJavaScript(
+            `(() => { const el = document.querySelector('time[datetime]'); return el ? parseInt(el.getAttribute('datetime'), 10) : null; })()`
+        );
+    } catch { return null; }
+}
 
 function daysUntil(date) {
     return Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24));
@@ -59,18 +68,13 @@ function parseFrenchDate(text) {
     return null;
 }
 
-function isLockedOrInaccessible(url) {
-    if (/extend\.html/i.test(url)) return 'locked';
-    if (/\/auth|\/login|signin/i.test(url) && !/configuration|notifications|dashboard/i.test(url)) return 'inaccessible';
-    return null;
-}
-
 // ---------------------------------------------------------------------------
-// Collecte d'une école : APNs, VPP, DEP/ADE, notifications (toggles séparés)
+// Collecte d'une école : APNs, VPP, DEP/ADE, notifications
 // ---------------------------------------------------------------------------
 
-async function collectInstance(wc, inst, masterName, lang) {
+async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
+    const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf (en attente jusqu'à 3 min)…` });
     const result = {
         master: masterName || '',
         prefix: inst.prefix,
@@ -82,74 +86,78 @@ async function collectInstance(wc, inst, masterName, lang) {
         error: null,
     };
 
-    // --- APNs --- (détecte aussi verrouillage / inaccessibilité)
+    // --- APNs ---
     if (inst.collectApns) {
-        const { url, ts, text } = await loadAndExtract(wc, base + '/configuration/apns', READY_APNS, 15000);
-        const state = isLockedOrInaccessible(url);
-        if (state === 'locked') {
+        await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
+        const url = await currentUrl(wc);
+        if (/extend\.html/i.test(url)) {
             result.locked = true;
-        } else if (state === 'inaccessible') {
-            result.inaccessible = true;
-            result.error = t(lang, 'err_session');
-        } else if (/surutilisation|0 licence/i.test(text)) {
-            result.overuse = true;
         } else {
-            const date = ts ? new Date(ts) : parseFrenchDate(text);
-            if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
-            const dm = text.match(/([\d][\d\s. ]*)\s*appareils/i);
-            if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
+            const txt = await pageText(wc);
+            if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
+                result.inaccessible = true;
+                result.error = t(lang, 'err_session');
+            } else if (/surutilisation|0 licence/i.test(txt)) {
+                result.overuse = true;
+            } else {
+                const ts = await firstTimeTimestamp(wc);
+                const date = ts ? new Date(ts) : parseFrenchDate(txt);
+                if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
+                const dm = txt.match(/([\d][\d\s. ]*)\s*appareils/i);
+                if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
+            }
         }
     }
 
     // --- VPP ---
     if (inst.collectVpp && !result.locked && !result.inaccessible) {
-        const { url, ts, text } = await loadAndExtract(wc, base + '/configuration/vpp', READY_CERT, 12000);
+        await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
+        const url = await currentUrl(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
         else {
-            const date = ts ? new Date(ts) : parseFrenchDate(text);
-            if (/expiré|expired/i.test(text) && !date) result.vpp = { expired: true };
+            const txt = await pageText(wc);
+            const ts = await firstTimeTimestamp(wc);
+            const date = ts ? new Date(ts) : parseFrenchDate(txt);
+            if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
             else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
         }
     }
 
     // --- DEP / ADE ---
     if (inst.collectDep && !result.locked && !result.inaccessible) {
-        const { url, ts, text } = await loadAndExtract(wc, base + '/configuration/dep', READY_CERT, 12000);
+        await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
+        const url = await currentUrl(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
-        else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(text)) {
-            result.dep = { cgu: true };
-        } else {
-            const date = ts ? new Date(ts) : parseFrenchDate(text);
-            if (date && !isNaN(date)) result.dep = { date: date.toISOString(), daysLeft: daysUntil(date) };
+        else {
+            const depTxt = await pageText(wc);
+            if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(depTxt)) {
+                result.dep = { cgu: true };
+            } else {
+                const dts = await firstTimeTimestamp(wc);
+                const ddate = dts ? new Date(dts) : parseFrenchDate(depTxt);
+                if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
+            }
         }
     }
 
-    // --- Notifications --- (poll des lignes du tableau, sans sleep fixe)
+    // --- Notifications ---
     if (inst.collectNotifications && !result.inaccessible) {
-        try { await wc.loadURL(base + '/notifications'); } catch {}
-        const start = Date.now();
-        let notifs = [];
-        while (Date.now() - start < 10000) {
-            if (wc.isDestroyed()) break;
-            try {
-                const r = await wc.executeJavaScript(`(() => {
-                    if (!document.querySelector('table tr, .content, main')) return null;
-                    const rows = [...document.querySelectorAll('table tr')].slice(1);
-                    return rows.filter(r => r.textContent && !r.textContent.includes('Fermé') && r.textContent.trim().length > 10)
-                               .slice(0, 8).map(r => r.textContent.trim().replace(/\\s+/g, ' ').substring(0, 180));
-                })()`);
-                if (r !== null) { notifs = r; break; }
-            } catch {}
-            await sleep(POLL);
-        }
-        result.notifications = notifs;
+        await gotoAndWait(wc, base + '/notifications', 'table, .content, main', 15000, stop);
+        await sleep(800);
+        try {
+            const notifs = await wc.executeJavaScript(`(() => {
+                const rows = [...document.querySelectorAll('table tr')].slice(1);
+                return rows.filter(r => r.textContent && !r.textContent.includes('Fermé') && r.textContent.trim().length > 10)
+                           .slice(0, 8).map(r => r.textContent.trim().replace(/\\s+/g, ' ').substring(0, 180));
+            })()`);
+            result.notifications = notifs || [];
+        } catch { result.notifications = []; }
     }
 
     result.level = computeLevel(result);
     return result;
 }
 
-// Niveaux d'alerte (repris du skill jamf-school-audit)
 function computeLevel(r) {
     if (r.inaccessible) return 'INACCESSIBLE';
     if (r.locked) return 'CRITIQUE';
@@ -164,17 +172,18 @@ function computeLevel(r) {
 }
 
 // ---------------------------------------------------------------------------
-// Collecte parallèle : plusieurs fenêtres (workers) partageant la session SSO
-// se répartissent les écoles via une file de travail commune.
+// Collecte de toutes les écoles d'un revendeur (fenêtre unique, séquentielle).
 // ---------------------------------------------------------------------------
 
-async function collectMaster(workers, master, onProgress, lang) {
+async function collectMaster(workers, master, onProgress, lang, shouldStop) {
     const queue = (master.instances || []).filter(i => i.enabled);
     const results = [];
-    let idx = 0; // incrément synchrone = work-stealing sûr (JS mono-thread)
+    let idx = 0;
+    const stop = () => (shouldStop ? shouldStop() : false);
 
     async function runWorker(wc) {
         while (true) {
+            if (stop()) break;
             const inst = queue[idx++];
             if (!inst) break;
             if (wc.isDestroyed()) break;
@@ -182,7 +191,7 @@ async function collectMaster(workers, master, onProgress, lang) {
             onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
             let result;
             try {
-                result = await collectInstance(wc, inst, master.name, lang);
+                result = await collectInstance(wc, inst, master.name, lang, onProgress, stop);
             } catch (err) {
                 result = { master: master.name, prefix: inst.prefix, error: err.message, level: 'INACCESSIBLE', notifications: [] };
             }

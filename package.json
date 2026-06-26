@@ -1,6 +1,7 @@
 {
   "name": "apnsmaster",
-  "version": "1.1.1",
+  "version": "1.2.0",
+  "buildSnapshot": 0,
   "description": "Audit des certificats Jamf School par revendeur",
   "main": "main.js",
   "scripts": {
@@ -23,7 +24,14 @@
     "mac": {
       "category": "public.app-category.utilities",
       "icon": "build/icon.icns",
-      "target": "dir"
+      "target": "dir",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSBluetoothAlwaysUsageDescription": "Accès Bluetooth requis pour les clés de sécurité / clés d'accès (FIDO).",
+        "NSBluetoothPeripheralUsageDescription": "Accès Bluetooth requis pour les clés de sécurité / clés d'accès (FIDO)."
+      }
     },
     "files": [
       "main.js",

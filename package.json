@@ -1,7 +1,7 @@
 {
   "name": "apnsmaster",
   "version": "1.2.1-beta",
-  "buildSnapshot": 3,
+  "buildSnapshot": 4,
   "description": "Audit des certificats Jamf School par revendeur",
   "main": "main.js",
   "scripts": {

@@ -3,12 +3,11 @@ const { t } = require('./i18n');
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
-// Navigation (version d'origine validée) : on charge l'URL puis on attend
-// patiemment qu'un sélecteur apparaisse (poll 300 ms), en laissant les
-// redirections SSO se terminer. Aucune logique d'auth/retry/parallélisme.
+// Navigation : charge l'URL puis poll jusqu'à ce qu'un sélecteur apparaisse.
+// Poll à 100 ms (était 300) pour réduire les temps morts entre checks.
 // ---------------------------------------------------------------------------
 
-const POLL = 300;
+const POLL = 100;
 
 const LOGIN_WAIT = 180000; // 3 min pour se connecter manuellement si Jamf le demande
 
@@ -23,7 +22,6 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin) {
                 `(() => ({ ok: !!document.querySelector(${JSON.stringify(selector)}), login: (!!document.querySelector('input[type="password"]') || /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)) }))()`
             );
             if (s && s.ok) return true;
-            // Jamf affiche une page de connexion : on prévient et on laisse 3 min.
             if (s && s.login && !prompted) {
                 prompted = true;
                 if (onLogin) onLogin();
@@ -40,18 +38,18 @@ async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
     return waitForSelector(wc, selector, timeout, stop, onLogin);
 }
 
-async function currentUrl(wc) {
-    try { return await wc.executeJavaScript('location.href'); } catch { return ''; }
-}
-async function pageText(wc) {
-    try { return await wc.executeJavaScript('document.body ? document.body.innerText : ""'); } catch { return ''; }
-}
-async function firstTimeTimestamp(wc) {
+// Récupère url + texte + timestamp en un seul aller-retour IPC.
+async function pageSnapshot(wc) {
     try {
-        return await wc.executeJavaScript(
-            `(() => { const el = document.querySelector('time[datetime]'); return el ? parseInt(el.getAttribute('datetime'), 10) : null; })()`
-        );
-    } catch { return null; }
+        return await wc.executeJavaScript(`(() => {
+            const el = document.querySelector('time[datetime]');
+            return {
+                url: location.href,
+                txt: document.body ? document.body.innerText : '',
+                ts: el ? parseInt(el.getAttribute('datetime'), 10) : null
+            };
+        })()`);
+    } catch { return { url: '', txt: '', ts: null }; }
 }
 
 function daysUntil(date) {
@@ -89,34 +87,28 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     // --- APNs ---
     if (inst.collectApns) {
         await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
-        const url = await currentUrl(wc);
+        const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) {
             result.locked = true;
+        } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
+            result.inaccessible = true;
+            result.error = t(lang, 'err_session');
+        } else if (/surutilisation|0 licence/i.test(txt)) {
+            result.overuse = true;
         } else {
-            const txt = await pageText(wc);
-            if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
-                result.inaccessible = true;
-                result.error = t(lang, 'err_session');
-            } else if (/surutilisation|0 licence/i.test(txt)) {
-                result.overuse = true;
-            } else {
-                const ts = await firstTimeTimestamp(wc);
-                const date = ts ? new Date(ts) : parseFrenchDate(txt);
-                if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
-                const dm = txt.match(/([\d][\d\s. ]*)\s*appareils/i);
-                if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
-            }
+            const date = ts ? new Date(ts) : parseFrenchDate(txt);
+            if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
+            const dm = txt.match(/([\d][\d\s. ]*)\s*appareils/i);
+            if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
         }
     }
 
     // --- VPP ---
     if (inst.collectVpp && !result.locked && !result.inaccessible) {
         await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
-        const url = await currentUrl(wc);
+        const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
         else {
-            const txt = await pageText(wc);
-            const ts = await firstTimeTimestamp(wc);
             const date = ts ? new Date(ts) : parseFrenchDate(txt);
             if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
             else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
@@ -126,24 +118,27 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     // --- DEP / ADE ---
     if (inst.collectDep && !result.locked && !result.inaccessible) {
         await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
-        const url = await currentUrl(wc);
+        const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
-        else {
-            const depTxt = await pageText(wc);
-            if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(depTxt)) {
-                result.dep = { cgu: true };
-            } else {
-                const dts = await firstTimeTimestamp(wc);
-                const ddate = dts ? new Date(dts) : parseFrenchDate(depTxt);
-                if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
-            }
+        else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
+            result.dep = { cgu: true };
+        } else {
+            const ddate = ts ? new Date(ts) : parseFrenchDate(txt);
+            if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
         }
     }
 
     // --- Notifications ---
     if (inst.collectNotifications && !result.inaccessible) {
         await gotoAndWait(wc, base + '/notifications', 'table, .content, main', 15000, stop);
-        await sleep(800);
+        // Poll adaptatif : on sort dès que les lignes sont rendues (max 600 ms).
+        for (let i = 0; i < 6; i++) {
+            await sleep(100);
+            try {
+                const ready = await wc.executeJavaScript(`document.querySelectorAll('table tr').length > 1`);
+                if (ready) break;
+            } catch { break; }
+        }
         try {
             const notifs = await wc.executeJavaScript(`(() => {
                 const rows = [...document.querySelectorAll('table tr')].slice(1);

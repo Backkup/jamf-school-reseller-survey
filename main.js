@@ -261,7 +261,7 @@ ipcMain.handle('start-scraper', async (_, opts) => {
     if (!masters.length) return { error: t(lang, 'err_no_instances') };
 
     if (!monitorWindow) createMonitorWindow();
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 200));
 
     scraperRunning = true;
     const send = (event) => { if (monitorWindow) monitorWindow.webContents.send('progress', event); };
@@ -279,7 +279,7 @@ ipcMain.handle('start-scraper', async (_, opts) => {
 
             const win = await openLoginWindow(master.loginUrl);
             // Laisse la session SSO s'établir complètement avant de lancer la collecte.
-            await new Promise(r => setTimeout(r, 1200));
+            await new Promise(r => setTimeout(r, 600));
 
             // Collecte en FENÊTRE UNIQUE (séquentielle). Pas de parallélisme :
             // une seule fenêtre conserve la session SSO d'une école à l'autre.

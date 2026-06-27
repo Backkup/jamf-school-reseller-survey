@@ -207,7 +207,15 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
     let idx = 0;
     const stop = () => (shouldStop ? shouldStop() : false);
 
-    async function runWorker(wc) {
+    // Le worker principal (fenêtre de login) collecte la première école seul.
+    // Une fois terminé, le SSO est confirmé et les workers secondaires démarrent.
+    let ssoReady = false;
+    const ssoWaiters = [];
+    const openGate = () => { ssoReady = true; ssoWaiters.forEach(r => r()); };
+    const waitGate = () => ssoReady ? Promise.resolve() : new Promise(r => ssoWaiters.push(r));
+
+    async function runWorker(wc, primary) {
+        if (!primary) await waitGate();
         while (true) {
             if (stop()) break;
             const inst = queue[idx++];
@@ -223,10 +231,11 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
             }
             onProgress({ type: 'result', result });
             results.push(result);
+            if (!ssoReady) openGate(); // ouvre le parallélisme après la 1ère école
         }
     }
 
-    await Promise.all(workers.map(wc => runWorker(wc)));
+    await Promise.all(workers.map((wc, i) => runWorker(wc, i === 0)));
     return results;
 }
 

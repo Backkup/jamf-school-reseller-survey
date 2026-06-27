@@ -1,7 +1,7 @@
 {
   "name": "apnsmaster",
   "version": "1.2.1-beta",
-  "buildSnapshot": 2,
+  "buildSnapshot": 3,
   "description": "Audit des certificats Jamf School par revendeur",
   "main": "main.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
-    "electron": "^28.3.3",
+    "electron": "^30.0.0",
     "electron-builder": "^24.13.3"
   },
   "build": {

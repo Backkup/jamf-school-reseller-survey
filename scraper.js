@@ -207,8 +207,9 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
     let idx = 0;
     const stop = () => (shouldStop ? shouldStop() : false);
 
-    // Le worker principal (fenêtre de login) collecte la première école seul.
-    // Une fois terminé, le SSO est confirmé et les workers secondaires démarrent.
+    // Le worker principal collecte les 2 premières écoles seul pour laisser
+    // le SSO s'établir sur plusieurs sous-domaines avant de paralléliser.
+    let primaryDone = 0;
     let ssoReady = false;
     const ssoWaiters = [];
     const openGate = () => { ssoReady = true; ssoWaiters.forEach(r => r()); };
@@ -231,7 +232,10 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
             }
             onProgress({ type: 'result', result });
             results.push(result);
-            if (!ssoReady) openGate(); // ouvre le parallélisme après la 1ère école
+            if (primary) {
+                primaryDone++;
+                if (!ssoReady && primaryDone >= 2) openGate(); // ouvre après 2 écoles
+            }
         }
     }
 

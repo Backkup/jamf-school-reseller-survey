@@ -1,15 +1,14 @@
 const { t } = require('./i18n');
+const { BrowserWindow } = require('electron');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ---------------------------------------------------------------------------
 // Navigation : charge l'URL puis poll jusqu'à ce qu'un sélecteur apparaisse.
-// Poll à 100 ms (était 300) pour réduire les temps morts entre checks.
 // ---------------------------------------------------------------------------
 
 const POLL = 100;
-
-const LOGIN_WAIT = 180000; // 3 min pour se connecter manuellement si Jamf le demande
+const LOGIN_WAIT = 180000; // 3 min pour login manuel si Jamf le demande
 
 async function waitForSelector(wc, selector, timeout, stop, onLogin) {
     let deadline = Date.now() + timeout;
@@ -52,6 +51,16 @@ async function pageSnapshot(wc) {
     } catch { return { url: '', txt: '', ts: null }; }
 }
 
+// Fenêtre invisible partageant la session par défaut (mêmes cookies SSO).
+function createHiddenWindow() {
+    return new BrowserWindow({
+        show: false,
+        width: 1024,
+        height: 768,
+        webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+}
+
 function daysUntil(date) {
     return Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24));
 }
@@ -67,7 +76,10 @@ function parseFrenchDate(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Collecte d'une école : APNs, VPP, DEP/ADE, notifications
+// Collecte d'une école :
+//   Phase 1 — APNs via la fenêtre principale (gère le login SSO si nécessaire)
+//   Phase 2 — VPP + DEP + Notifications en parallèle dans des fenêtres cachées
+//             (même session → mêmes cookies → pas de collision SSO)
 // ---------------------------------------------------------------------------
 
 async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
@@ -84,7 +96,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
         error: null,
     };
 
-    // --- APNs ---
+    // --- Phase 1 : APNs (fenêtre principale, gère le SSO) ---
     if (inst.collectApns) {
         await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
         const { url, txt, ts } = await pageSnapshot(wc);
@@ -103,50 +115,73 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
         }
     }
 
-    // --- VPP ---
-    if (inst.collectVpp && !result.locked && !result.inaccessible) {
-        await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
-        const { url, txt, ts } = await pageSnapshot(wc);
-        if (/extend\.html/i.test(url)) result.locked = true;
-        else {
-            const date = ts ? new Date(ts) : parseFrenchDate(txt);
-            if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
-            else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
-        }
+    // Verrouillé ou inaccessible : inutile d'aller plus loin.
+    if (result.locked || result.inaccessible) {
+        result.level = computeLevel(result);
+        return result;
     }
 
-    // --- DEP / ADE ---
-    if (inst.collectDep && !result.locked && !result.inaccessible) {
-        await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
-        const { url, txt, ts } = await pageSnapshot(wc);
-        if (/extend\.html/i.test(url)) result.locked = true;
-        else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
-            result.dep = { cgu: true };
-        } else {
-            const ddate = ts ? new Date(ts) : parseFrenchDate(txt);
-            if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
-        }
-    }
+    // --- Phase 2 : VPP + DEP + Notifications en parallèle ---
+    // Les cookies SSO sont déjà établis (même sous-domaine) : pas de risque de
+    // collision auth entre les fenêtres cachées.
+    const tasks = [];
+    if (inst.collectVpp)           tasks.push({ key: 'vpp',   url: base + '/configuration/vpp', sel: 'time[datetime], .content, main',    timeout: 18000 });
+    if (inst.collectDep)           tasks.push({ key: 'dep',   url: base + '/configuration/dep', sel: '.content, main, time[datetime]',     timeout: 18000 });
+    if (inst.collectNotifications) tasks.push({ key: 'notif', url: base + '/notifications',      sel: 'table, .content, main',             timeout: 15000 });
 
-    // --- Notifications ---
-    if (inst.collectNotifications && !result.inaccessible) {
-        await gotoAndWait(wc, base + '/notifications', 'table, .content, main', 15000, stop);
-        // Poll adaptatif : on sort dès que les lignes sont rendues (max 600 ms).
-        for (let i = 0; i < 6; i++) {
-            await sleep(100);
-            try {
-                const ready = await wc.executeJavaScript(`document.querySelectorAll('table tr').length > 1`);
-                if (ready) break;
-            } catch { break; }
+    const wins = [];
+    try {
+        const outcomes = await Promise.all(tasks.map(async ({ key, url, sel, timeout }) => {
+            const win = createHiddenWindow();
+            wins.push(win);
+            const wct = win.webContents;
+
+            await gotoAndWait(wct, url, sel, timeout, stop);
+            if (wct.isDestroyed()) return { key, data: null };
+
+            if (key === 'notif') {
+                // Poll adaptatif : sort dès que les lignes sont rendues (max 600 ms).
+                for (let i = 0; i < 6; i++) {
+                    await sleep(100);
+                    const ready = await wct.executeJavaScript(`document.querySelectorAll('table tr').length > 1`).catch(() => false);
+                    if (ready) break;
+                }
+                const notifs = await wct.executeJavaScript(`(() => {
+                    const rows = [...document.querySelectorAll('table tr')].slice(1);
+                    return rows.filter(r => r.textContent && !r.textContent.includes('Fermé') && r.textContent.trim().length > 10)
+                               .slice(0, 8).map(r => r.textContent.trim().replace(/\\s+/g, ' ').substring(0, 180));
+                })()`).catch(() => []);
+                return { key, data: notifs };
+            }
+
+            return { key, data: await pageSnapshot(wct) };
+        }));
+
+        for (const { key, data } of outcomes) {
+            if (!data) continue;
+            if (key === 'vpp') {
+                const { url, txt, ts } = data;
+                if (/extend\.html/i.test(url)) result.locked = true;
+                else {
+                    const date = ts ? new Date(ts) : parseFrenchDate(txt);
+                    if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
+                    else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
+                }
+            } else if (key === 'dep') {
+                const { url, txt, ts } = data;
+                if (/extend\.html/i.test(url)) result.locked = true;
+                else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
+                    result.dep = { cgu: true };
+                } else {
+                    const ddate = ts ? new Date(ts) : parseFrenchDate(txt);
+                    if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
+                }
+            } else if (key === 'notif') {
+                result.notifications = data;
+            }
         }
-        try {
-            const notifs = await wc.executeJavaScript(`(() => {
-                const rows = [...document.querySelectorAll('table tr')].slice(1);
-                return rows.filter(r => r.textContent && !r.textContent.includes('Fermé') && r.textContent.trim().length > 10)
-                           .slice(0, 8).map(r => r.textContent.trim().replace(/\\s+/g, ' ').substring(0, 180));
-            })()`);
-            result.notifications = notifs || [];
-        } catch { result.notifications = []; }
+    } finally {
+        wins.forEach(w => { try { if (!w.isDestroyed()) w.close(); } catch {} });
     }
 
     result.level = computeLevel(result);

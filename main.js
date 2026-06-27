@@ -261,7 +261,11 @@ ipcMain.handle('start-scraper', async (_, opts) => {
     if (!masters.length) return { error: t(lang, 'err_no_instances') };
 
     if (!monitorWindow) createMonitorWindow();
-    await new Promise(r => setTimeout(r, 200));
+    // Attend que la fenêtre moniteur soit prête avant d'envoyer des événements.
+    await new Promise(r => {
+        if (!monitorWindow.webContents.isLoading()) return r();
+        monitorWindow.webContents.once('did-finish-load', r);
+    });
 
     scraperRunning = true;
     const send = (event) => { if (monitorWindow) monitorWindow.webContents.send('progress', event); };
@@ -278,8 +282,8 @@ ipcMain.handle('start-scraper', async (_, opts) => {
             send({ type: 'log', message: t(lang, 'log_connecting', { name: master.name }) });
 
             const win = await openLoginWindow(master.loginUrl);
-            // Laisse la session SSO s'établir complètement avant de lancer la collecte.
-            await new Promise(r => setTimeout(r, 600));
+            // Laisse les cookies SSO se propager (le re-nav detector gère les rebonds résiduels).
+            await new Promise(r => setTimeout(r, 300));
 
             // Collecte en FENÊTRE UNIQUE (séquentielle). Pas de parallélisme :
             // une seule fenêtre conserve la session SSO d'une école à l'autre.

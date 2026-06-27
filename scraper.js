@@ -9,23 +9,43 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 const POLL = 100;
 
-const LOGIN_WAIT = 180000; // 3 min pour se connecter manuellement si Jamf le demande
+const LOGIN_WAIT = 180000; // durée max d'attente si l'utilisateur doit se connecter
 
-async function waitForSelector(wc, selector, timeout, stop, onLogin) {
+// Attend qu'un sélecteur apparaisse. Gestion SSO :
+// – page de login détectée → onLogin(), deadline étendue, wasOnLogin = true
+// – retour sur Jamf après login (jamf:true, pas le sélecteur) → re-navigation
+//   immédiate vers targetUrl, sans attendre la fin du timeout.
+async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) {
     let deadline = Date.now() + timeout;
     let prompted = false;
+    let wasOnLogin = false;
+
     while (Date.now() < deadline) {
         if (wc.isDestroyed()) throw new Error('Fenêtre fermée');
         if (stop && stop()) return false;
         try {
             const s = await wc.executeJavaScript(
-                `(() => ({ ok: !!document.querySelector(${JSON.stringify(selector)}), login: (!!document.querySelector('input[type="password"]') || /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)) }))()`
+                `(() => ({
+                    ok:    !!document.querySelector(${JSON.stringify(selector)}),
+                    login: !!document.querySelector('input[type="password"]') ||
+                           /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
+                    jamf:  /\\.jamfcloud\\.com/.test(location.href) &&
+                           !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)
+                }))()`
             );
-            if (s && s.ok) return true;
-            if (s && s.login && !prompted) {
-                prompted = true;
-                if (onLogin) onLogin();
-                deadline = Date.now() + LOGIN_WAIT;
+            if (s.ok) return true;
+            if (s.login) {
+                wasOnLogin = true;
+                if (!prompted) {
+                    prompted = true;
+                    if (onLogin) onLogin();
+                    deadline = Date.now() + LOGIN_WAIT;
+                }
+            } else if (wasOnLogin && s.jamf && targetUrl) {
+                // Auth terminée : Jamf a renvoyé vers le dashboard, pas l'URL cible.
+                // Re-navigation immédiate → plus d'attente sur le dashboard.
+                wasOnLogin = false;
+                try { await wc.loadURL(targetUrl); } catch {}
             }
         } catch { /* navigation en cours */ }
         await sleep(POLL);
@@ -34,8 +54,8 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin) {
 }
 
 async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
-    try { await wc.loadURL(url); } catch { /* redirection / abort SSO : non bloquant */ }
-    return waitForSelector(wc, selector, timeout, stop, onLogin);
+    try { await wc.loadURL(url); } catch { /* redirection SSO : non bloquant */ }
+    return waitForSelector(wc, selector, timeout, stop, onLogin, url);
 }
 
 // Récupère url + texte + timestamp en un seul aller-retour IPC.
@@ -72,7 +92,7 @@ function parseFrenchDate(text) {
 
 async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-    const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf (en attente jusqu'à 3 min)…` });
+    const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
     const result = {
         master: masterName || '',
         prefix: inst.prefix,

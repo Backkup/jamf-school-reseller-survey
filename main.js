@@ -6,6 +6,10 @@ const { generatePdf } = require('./report');
 const { uploadPdf, buildSummary } = require('./slack');
 const { t, detectLang } = require('./i18n');
 
+// Passkeys macOS Keychain (Touch ID / iCloud Keychain) — authentificateur plateforme.
+// WebAuthentication n'est pas activé par défaut dans Electron, contrairement à Chrome.
+app.commandLine.appendSwitch('enable-features', 'WebAuthentication,WebAuthenticationPasskeys');
+
 // En dev : le fichier du dépôt (modifiable directement).
 // En production (.app) : le bundle est en lecture seule → on persiste dans le
 // dossier utilisateur, en amorçant depuis la config par défaut empaquetée.
@@ -83,18 +87,32 @@ function openLoginWindow(loginUrl, partition) {
             width: 1000,
             height: 720,
             title: 'Connexion Jamf School — laissez cette fenêtre ouverte',
-            webPreferences: { nodeIntegration: false, contextIsolation: true, partition },
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                partition,
+            },
         });
 
+        // Les popups Auth0/SSO héritent des mêmes permissions WebAuthn que la fenêtre parente.
         loginWindow.webContents.setWindowOpenHandler(({ url }) => {
             if (/google\.com|accounts\.google|microsoftonline|okta|auth/i.test(url)) {
-                return { action: 'allow', overrideBrowserWindowOptions: { width: 600, height: 720, webPreferences: { nodeIntegration: false, contextIsolation: true, partition } } };
+                return {
+                    action: 'allow',
+                    overrideBrowserWindowOptions: {
+                        width: 600,
+                        height: 720,
+                        webPreferences: { nodeIntegration: false, contextIsolation: true, partition },
+                    },
+                };
             }
             return { action: 'allow' };
         });
 
         loginWindow.loadURL(loginUrl);
+        // focus() est nécessaire pour que macOS autorise la feuille Touch ID (platform authenticator).
         loginWindow.show();
+        loginWindow.focus();
 
         let resolved = false;
         const checkNav = (url) => {

@@ -1,5 +1,4 @@
 const { t } = require('./i18n');
-const { BrowserWindow } = require('electron');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -10,15 +9,14 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 const POLL = 100;
 const LOGIN_WAIT = 180000; // durée max d'attente si l'utilisateur doit se connecter
 
-// Attend qu'un sélecteur apparaisse dans wc, en polllant toutes les POLL ms.
+// Attend qu'un sélecteur apparaisse dans wc, en pollant toutes les POLL ms.
 //
 // Gestion SSO :
 //   – Si Jamf redirige vers une page de login : on prévient (onLogin) et on
 //     étend le délai pour laisser le temps de se connecter.
 //   – Quand l'utilisateur finit de se connecter, Jamf le renvoie sur le
-//     dashboard (pas sur l'URL cible). On le détecte (plus de login, pas encore
-//     le sélecteur) et on re-navigue immédiatement vers targetUrl — aucune
-//     attente fixe.
+//     dashboard (pas sur l'URL cible). On le détecte (plus de login, page
+//     Jamf normale) et on re-navigue immédiatement vers targetUrl.
 async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) {
     let deadline = Date.now() + timeout;
     let prompted = false;
@@ -93,13 +91,12 @@ function parseFrenchDate(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Collecte d'une école :
-//   Phase 1 — APNs via la fenêtre principale (gère le login SSO si nécessaire)
-//   Phase 2 — VPP + DEP + Notifications en parallèle dans des fenêtres du pool
-//             (même session → mêmes cookies → pas de collision SSO)
+// Collecte d'une école (séquentielle dans la fenêtre wc) :
+// APNs → VPP → DEP → Notifications
+// La parallelisation se fait au niveau des écoles (4 workers simultanés).
 // ---------------------------------------------------------------------------
 
-async function collectInstance(wc, inst, masterName, lang, onProgress, stop, pool) {
+async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
     const loginPrompt = () => onProgress && onProgress({
         type: 'log',
@@ -114,7 +111,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop, poo
         locked: false, overuse: false, inaccessible: false, error: null,
     };
 
-    // --- Phase 1 : APNs (fenêtre principale, gère le SSO) ---
+    // --- APNs ---
     if (inst.collectApns) {
         await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
         const { url, txt, ts } = await pageSnapshot(wc);
@@ -138,59 +135,47 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop, poo
         return result;
     }
 
-    // --- Phase 2 : VPP + DEP + Notifications en parallèle (fenêtres du pool) ---
-    // Auth déjà établie sur ce sous-domaine → pas de collision SSO possible.
-    const tasks = [];
-    if (inst.collectVpp)           tasks.push({ key: 'vpp',   url: base + '/configuration/vpp', sel: 'time[datetime], .content, main', timeout: 18000 });
-    if (inst.collectDep)           tasks.push({ key: 'dep',   url: base + '/configuration/dep', sel: '.content, main, time[datetime]', timeout: 18000 });
-    if (inst.collectNotifications) tasks.push({ key: 'notif', url: base + '/notifications',      sel: 'table, .content, main',          timeout: 15000 });
+    // --- VPP ---
+    if (inst.collectVpp) {
+        await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
+        const { url, txt, ts } = await pageSnapshot(wc);
+        if (/extend\.html/i.test(url)) result.locked = true;
+        else {
+            const date = ts ? new Date(ts) : parseFrenchDate(txt);
+            if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
+            else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
+        }
+    }
 
-    const outcomes = await Promise.all(tasks.map(async ({ key, url, sel, timeout }, i) => {
-        const wct = pool[i].webContents;
-        if (wct.isDestroyed()) return { key, data: null };
+    // --- DEP / ADE ---
+    if (inst.collectDep && !result.locked) {
+        await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
+        const { url, txt, ts } = await pageSnapshot(wc);
+        if (/extend\.html/i.test(url)) result.locked = true;
+        else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
+            result.dep = { cgu: true };
+        } else {
+            const ddate = ts ? new Date(ts) : parseFrenchDate(txt);
+            if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
+        }
+    }
 
-        await gotoAndWait(wct, url, sel, timeout, stop);
-        if (wct.isDestroyed()) return { key, data: null };
-
-        if (key === 'notif') {
-            for (let j = 0; j < 6; j++) {
-                await sleep(100);
-                const ready = await wct.executeJavaScript(`document.querySelectorAll('table tr').length > 1`).catch(() => false);
-                if (ready) break;
-            }
-            const notifs = await wct.executeJavaScript(`(() => {
+    // --- Notifications ---
+    if (inst.collectNotifications) {
+        await gotoAndWait(wc, base + '/notifications', 'table, .content, main', 15000, stop);
+        for (let i = 0; i < 6; i++) {
+            await sleep(100);
+            const ready = await wc.executeJavaScript(`document.querySelectorAll('table tr').length > 1`).catch(() => false);
+            if (ready) break;
+        }
+        try {
+            const notifs = await wc.executeJavaScript(`(() => {
                 const rows = [...document.querySelectorAll('table tr')].slice(1);
                 return rows.filter(r => r.textContent && !r.textContent.includes('Fermé') && r.textContent.trim().length > 10)
                            .slice(0, 8).map(r => r.textContent.trim().replace(/\\s+/g, ' ').substring(0, 180));
-            })()`).catch(() => []);
-            return { key, data: notifs };
-        }
-
-        return { key, data: await pageSnapshot(wct) };
-    }));
-
-    for (const { key, data } of outcomes) {
-        if (!data) continue;
-        if (key === 'vpp') {
-            const { url, txt, ts } = data;
-            if (/extend\.html/i.test(url)) result.locked = true;
-            else {
-                const date = ts ? new Date(ts) : parseFrenchDate(txt);
-                if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
-                else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
-            }
-        } else if (key === 'dep') {
-            const { url, txt, ts } = data;
-            if (/extend\.html/i.test(url)) result.locked = true;
-            else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
-                result.dep = { cgu: true };
-            } else {
-                const ddate = ts ? new Date(ts) : parseFrenchDate(txt);
-                if (ddate && !isNaN(ddate)) result.dep = { date: ddate.toISOString(), daysLeft: daysUntil(ddate) };
-            }
-        } else if (key === 'notif') {
-            result.notifications = data;
-        }
+            })()`);
+            result.notifications = notifs || [];
+        } catch { result.notifications = []; }
     }
 
     result.level = computeLevel(result);
@@ -212,8 +197,8 @@ function computeLevel(r) {
 
 // ---------------------------------------------------------------------------
 // Collecte de toutes les écoles d'un revendeur.
-// Le pool de 3 fenêtres cachées est créé une seule fois et réutilisé entre
-// les écoles, évitant le coût de spawn d'un renderer à chaque école.
+// workers = tableau de webContents (1 par fenêtre parallèle).
+// Chaque worker pioche dans la queue partagée jusqu'à épuisement.
 // ---------------------------------------------------------------------------
 
 async function collectMaster(workers, master, onProgress, lang, shouldStop) {
@@ -222,37 +207,26 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
     let idx = 0;
     const stop = () => (shouldStop ? shouldStop() : false);
 
-    const pool = [
-        new BrowserWindow({ show: false, width: 1024, height: 768, webPreferences: { nodeIntegration: false, contextIsolation: true } }),
-        new BrowserWindow({ show: false, width: 1024, height: 768, webPreferences: { nodeIntegration: false, contextIsolation: true } }),
-        new BrowserWindow({ show: false, width: 1024, height: 768, webPreferences: { nodeIntegration: false, contextIsolation: true } }),
-    ];
+    async function runWorker(wc) {
+        while (true) {
+            if (stop()) break;
+            const inst = queue[idx++];
+            if (!inst) break;
+            if (wc.isDestroyed()) break;
 
-    try {
-        async function runWorker(wc) {
-            while (true) {
-                if (stop()) break;
-                const inst = queue[idx++];
-                if (!inst) break;
-                if (wc.isDestroyed()) break;
-
-                onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
-                let result;
-                try {
-                    result = await collectInstance(wc, inst, master.name, lang, onProgress, stop, pool);
-                } catch (err) {
-                    result = { master: master.name, prefix: inst.prefix, error: err.message, level: 'INACCESSIBLE', notifications: [] };
-                }
-                onProgress({ type: 'result', result });
-                results.push(result);
+            onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
+            let result;
+            try {
+                result = await collectInstance(wc, inst, master.name, lang, onProgress, stop);
+            } catch (err) {
+                result = { master: master.name, prefix: inst.prefix, error: err.message, level: 'INACCESSIBLE', notifications: [] };
             }
+            onProgress({ type: 'result', result });
+            results.push(result);
         }
-
-        await Promise.all(workers.map(wc => runWorker(wc)));
-    } finally {
-        pool.forEach(w => { try { if (!w.isDestroyed()) w.close(); } catch {} });
     }
 
+    await Promise.all(workers.map(wc => runWorker(wc)));
     return results;
 }
 

@@ -278,15 +278,24 @@ ipcMain.handle('start-scraper', async (_, opts) => {
             send({ type: 'log', message: t(lang, 'log_connecting', { name: master.name }) });
 
             const win = await openLoginWindow(master.loginUrl);
-            // Laisse la session SSO s'établir complètement avant de lancer la collecte.
+            // Laisse la session SSO s'établir avant de lancer la collecte.
             await new Promise(r => setTimeout(r, 600));
 
-            // Collecte en FENÊTRE UNIQUE (séquentielle). Pas de parallélisme :
-            // une seule fenêtre conserve la session SSO d'une école à l'autre.
-            const workers = [win.webContents];
-            send({ type: 'log', message: t(lang, 'log_connected', { name: master.name, n: 1 }) });
+            // 4 fenêtres parallèles partageant la même session (mêmes cookies SSO).
+            // Chaque fenêtre prend une école dans la queue jusqu'à épuisement.
+            const extraWins = [0, 1, 2].map(() => new BrowserWindow({
+                show: false, width: 1024, height: 768,
+                webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: false },
+            }));
+            const workers = [win.webContents, ...extraWins.map(w => w.webContents)];
+            send({ type: 'log', message: t(lang, 'log_connected', { name: master.name, n: workers.length }) });
 
-            const results = await collectMaster(workers, master, send, lang, () => stopRequested);
+            let results;
+            try {
+                results = await collectMaster(workers, master, send, lang, () => stopRequested);
+            } finally {
+                extraWins.forEach(w => { try { if (!w.isDestroyed()) w.close(); } catch {} });
+            }
 
             // Si aucune donnée collectée et arrêt immédiat, on saute le rapport.
             const collectedSomething = results.length > 0;

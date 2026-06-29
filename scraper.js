@@ -8,14 +8,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ---------------------------------------------------------------------------
 
 const POLL = 100;
-const LOGIN_WAIT = 180000; // timeout de sécurité max si login manuel requis
+const LOGIN_WAIT = 180000;
 
-// Attend qu'un sélecteur apparaisse, en pollant toutes les POLL ms.
-//
-// Détection SSO :
-//   – Page de login détectée → prévient (onLogin), étend le délai.
-//   – Retour sur Jamf après login (dashboard) → re-navigue immédiatement
-//     vers targetUrl sans attendre la fin du timeout.
 async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) {
     let deadline = Date.now() + timeout;
     let prompted = false;
@@ -43,8 +37,6 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     deadline = Date.now() + LOGIN_WAIT;
                 }
             } else if (wasOnLogin && s.jamf && targetUrl) {
-                // Login terminé, Jamf a renvoyé vers le dashboard.
-                // Re-navigation immédiate vers la page cible.
                 wasOnLogin = false;
                 try { await wc.loadURL(targetUrl); } catch {}
             }
@@ -55,27 +47,20 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
 }
 
 async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
-    try { await wc.loadURL(url); } catch { /* redirection SSO : non bloquant */ }
+    try { await wc.loadURL(url); } catch {}
     return waitForSelector(wc, selector, timeout, stop, onLogin, url);
 }
 
-// Récupère url + texte + timestamp en un seul aller-retour IPC.
 async function pageSnapshot(wc) {
     try {
         return await wc.executeJavaScript(`(() => {
             const el = document.querySelector('time[datetime]');
-            return {
-                url: location.href,
-                txt: document.body ? document.body.innerText : '',
-                ts:  el ? parseInt(el.getAttribute('datetime'), 10) : null
-            };
+            return { url: location.href, txt: document.body ? document.body.innerText : '', ts: el ? parseInt(el.getAttribute('datetime'), 10) : null };
         })()`);
     } catch { return { url: '', txt: '', ts: null }; }
 }
 
-function daysUntil(date) {
-    return Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24));
-}
+function daysUntil(date) { return Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24)); }
 
 function parseFrenchDate(text) {
     if (!text) return null;
@@ -89,66 +74,48 @@ function parseFrenchDate(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Collecte d'une école — 2 phases :
-//   Phase 1 : APNs dans la fenêtre principale (gère SSO si nécessaire)
-//   Phase 2 : VPP + DEP + Notifications en parallèle dans les fenêtres du
-//             pool (même sous-domaine → mêmes cookies → SSO déjà établi)
+// Collecte APNs (navigation + snapshot)
 // ---------------------------------------------------------------------------
 
-async function collectInstance(wc, inst, masterName, lang, onProgress, stop, pool) {
-    const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-    const loginPrompt = () => onProgress && onProgress({
-        type: 'log',
-        message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…`,
-    });
-    const result = {
-        master: masterName || '',
-        prefix: inst.prefix,
-        domain: base.replace(/^https?:\/\//, ''),
-        devices: null, apns: null, vpp: null, dep: null,
-        notifications: [],
-        locked: false, overuse: false, inaccessible: false, error: null,
-    };
+async function fetchApns(wc, base, inst, stop, onLogin) {
+    if (!inst.collectApns) return null;
+    await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 15000, stop, onLogin);
+    return pageSnapshot(wc);
+}
 
-    // --- Phase 1 : APNs (fenêtre principale, gère le SSO) ---
-    if (inst.collectApns) {
-        await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 15000, stop, loginPrompt);
-        const { url, txt, ts } = await pageSnapshot(wc);
-        if (/extend\.html/i.test(url)) {
-            result.locked = true;
-        } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
-            result.inaccessible = true;
-            result.error = t(lang, 'err_session');
-        } else if (/surutilisation|0 licence/i.test(txt)) {
-            result.overuse = true;
-        } else {
-            const date = ts ? new Date(ts) : parseFrenchDate(txt);
-            if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
-            const dm = txt.match(/([\d][\d\s. ]*)\s*appareils/i);
-            if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
-        }
+function applyApns(snap, result, lang) {
+    if (!snap) return;
+    const { url, txt, ts } = snap;
+    if (/extend\.html/i.test(url)) {
+        result.locked = true;
+    } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
+        result.inaccessible = true;
+        result.error = t(lang, 'err_session');
+    } else if (/surutilisation|0 licence/i.test(txt)) {
+        result.overuse = true;
+    } else {
+        const date = ts ? new Date(ts) : parseFrenchDate(txt);
+        if (date && !isNaN(date)) result.apns = { date: date.toISOString(), daysLeft: daysUntil(date) };
+        const dm = txt.match(/([\d][\d\s. ]*)\s*appareils/i);
+        if (dm) { const n = parseInt(dm[1].replace(/[^\d]/g, ''), 10); if (!isNaN(n)) result.devices = n; }
     }
+}
 
-    // Verrouillé ou inaccessible : inutile d'aller plus loin.
-    if (result.locked || result.inaccessible) {
-        result.level = computeLevel(result);
-        return result;
-    }
+// ---------------------------------------------------------------------------
+// Phase 2 : VPP + DEP + Notifications en parallèle (fenêtres du pool)
+// ---------------------------------------------------------------------------
 
-    // --- Phase 2 : VPP + DEP + Notifications en parallèle ---
-    // SSO déjà établi par phase 1 sur ce sous-domaine → pas de collision.
+async function fetchPhase2(pool, base, inst, stop) {
     const tasks = [];
     if (inst.collectVpp)           tasks.push({ key: 'vpp',   url: base + '/configuration/vpp', sel: 'time[datetime], .content, main', timeout: 10000, win: pool[0] });
     if (inst.collectDep)           tasks.push({ key: 'dep',   url: base + '/configuration/dep', sel: '.content, main, time[datetime]', timeout: 10000, win: pool[1] });
     if (inst.collectNotifications) tasks.push({ key: 'notif', url: base + '/notifications',      sel: 'table, .content, main',          timeout:  8000, win: pool[2] });
 
-    const outcomes = await Promise.all(tasks.map(async ({ key, url, sel, timeout, win }) => {
+    return Promise.all(tasks.map(async ({ key, url, sel, timeout, win }) => {
         const wct = win.webContents;
         if (wct.isDestroyed()) return { key, data: null };
-
         await gotoAndWait(wct, url, sel, timeout, stop);
         if (wct.isDestroyed()) return { key, data: null };
-
         if (key === 'notif') {
             for (let i = 0; i < 6; i++) {
                 await sleep(100);
@@ -162,10 +129,11 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop, poo
             })()`).catch(() => []);
             return { key, data: notifs };
         }
-
         return { key, data: await pageSnapshot(wct) };
     }));
+}
 
+function applyPhase2(outcomes, result) {
     for (const { key, data } of outcomes) {
         if (!data) continue;
         if (key === 'vpp') {
@@ -189,9 +157,6 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop, poo
             result.notifications = data;
         }
     }
-
-    result.level = computeLevel(result);
-    return result;
 }
 
 function computeLevel(r) {
@@ -208,8 +173,13 @@ function computeLevel(r) {
 }
 
 // ---------------------------------------------------------------------------
-// Collecte de toutes les écoles d'un revendeur.
-// Pool de 3 fenêtres cachées créé une fois, réutilisé entre les écoles.
+// Pipeline par école :
+//   École N  : APNs → [VPP+DEP+Notif (pool)  ║  APNs N+1 (fenêtre principale)]
+//   École N+1: APNs déjà chargé → [VPP+DEP+Notif ║ APNs N+2]  ...
+//
+// La fenêtre principale est réutilisée pour pré-charger le prochain APNs
+// pendant que le pool traite la phase 2, éliminant l'attente APNs sur toutes
+// les écoles sauf la première.
 // ---------------------------------------------------------------------------
 
 async function collectMaster(workers, master, onProgress, lang, shouldStop) {
@@ -226,19 +196,56 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
 
     try {
         async function runWorker(wc) {
+            let prefetchedSnap = null; // APNs snapshot pré-chargé pour l'école courante
+
             while (true) {
                 if (stop()) break;
                 const inst = queue[idx++];
                 if (!inst) break;
                 if (wc.isDestroyed()) break;
 
+                const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
+                const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
+
                 onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
-                let result;
+
+                const result = {
+                    master: master.name, prefix: inst.prefix,
+                    domain: base.replace(/^https?:\/\//, ''),
+                    devices: null, apns: null, vpp: null, dep: null,
+                    notifications: [], locked: false, overuse: false, inaccessible: false, error: null,
+                };
+
                 try {
-                    result = await collectInstance(wc, inst, master.name, lang, onProgress, stop, pool);
+                    // Phase 1 : APNs (depuis le pré-chargement ou navigation fraîche)
+                    const apnsSnap = prefetchedSnap ?? await fetchApns(wc, base, inst, stop, loginPrompt);
+                    prefetchedSnap = null;
+                    applyApns(apnsSnap, result, lang);
+
+                    if (!result.locked && !result.inaccessible) {
+                        // Phase 2 + pré-chargement APNs de la prochaine école en parallèle.
+                        const nextInst = queue[idx]; // peek sans incrémenter
+                        const nextBase = nextInst?.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
+                        const nextPrompt = nextInst ? () => onProgress && onProgress({ type: 'log', message: `🔐 ${nextInst.prefix} — connectez-vous dans la fenêtre Jamf…` }) : null;
+
+                        const [outcomes, nextSnap] = await Promise.all([
+                            fetchPhase2(pool, base, inst, stop),
+                            nextInst?.collectApns ? fetchApns(wc, nextBase, nextInst, stop, nextPrompt) : Promise.resolve(null),
+                        ]);
+
+                        prefetchedSnap = nextSnap;
+                        applyPhase2(outcomes, result);
+                    }
                 } catch (err) {
-                    result = { master: master.name, prefix: inst.prefix, error: err.message, level: 'INACCESSIBLE', notifications: [] };
+                    prefetchedSnap = null;
+                    result.error = err.message;
+                    result.level = 'INACCESSIBLE';
+                    onProgress({ type: 'result', result });
+                    results.push(result);
+                    continue;
                 }
+
+                result.level = computeLevel(result);
                 onProgress({ type: 'result', result });
                 results.push(result);
             }

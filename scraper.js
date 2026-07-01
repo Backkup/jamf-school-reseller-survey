@@ -95,9 +95,22 @@ function parseFrenchDate(text) {
 // Collecte APNs (navigation + snapshot)
 // ---------------------------------------------------------------------------
 
+// Attend que time[datetime] apparaisse dans le DOM (composants Vue montés en différé).
+async function waitForDate(wc, maxMs) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        const found = await wc.executeJavaScript(
+            `!!document.querySelector('time[datetime]')`
+        ).catch(() => false);
+        if (found) return;
+        await sleep(100);
+    }
+}
+
 async function fetchApns(wc, base, inst, stop, onLogin) {
     if (!inst.collectApns) return null;
     await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime], .v-card, main', 15000, stop, onLogin);
+    await waitForDate(wc, 3000); // laisse Vue finir de monter les composants
     return pageSnapshot(wc);
 }
 
@@ -134,6 +147,7 @@ async function fetchPhase2(pool, base, inst, stop) {
         if (wct.isDestroyed()) return { key, data: null };
         await gotoAndWait(wct, url, sel, timeout, stop);
         if (wct.isDestroyed()) return { key, data: null };
+        if (key === 'vpp' || key === 'dep') await waitForDate(wct, 2000);
         if (key === 'notif') {
             for (let i = 0; i < 6; i++) {
                 await sleep(100);

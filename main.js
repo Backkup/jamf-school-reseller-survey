@@ -298,7 +298,13 @@ ipcMain.handle('start-scraper', async (_, opts) => {
     });
 
     scraperRunning = true;
-    const send = (event) => { if (monitorWindow) monitorWindow.webContents.send('progress', event); };
+    const send = (event) => {
+        if (monitorWindow) monitorWindow.webContents.send('progress', event);
+        if (event.type === 'login' && loginWindow && !loginWindow.isDestroyed()) {
+            loginWindow.show();
+            loginWindow.focus();
+        }
+    };
 
     const totalInstances = masters.reduce((n, m) => n + m.instances.filter(i => i.enabled).length, 0);
     send({ type: 'start', total: totalInstances, masters: masters.length });

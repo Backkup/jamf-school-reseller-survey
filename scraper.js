@@ -32,6 +32,7 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     jamf:     /\\.jamfcloud\\.com/.test(location.href) &&
                               !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
                     onTarget: ${targetCheck},
+                    isDash:   /\\/(dashboard|home)(\\?|$|\\/)/i.test(location.pathname),
                 }))()`
             );
             if (s.ok) return true;
@@ -41,9 +42,11 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     if (onLogin) onLogin();
                     deadline = Date.now() + LOGIN_WAIT;
                 }
-            } else if (s.jamf && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
-                // Sur jamfcloud mais pas sur la page cible : redirection silencieuse
-                // vers /dashboard (SSO déjà actif) ou post-login. On re-navigue.
+            } else if (s.jamf && s.isDash && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
+                // Redirigé vers /dashboard ou /home (SSO déjà actif ou post-login).
+                // On re-navigue uniquement depuis ces pages stables, pas depuis les
+                // pages intermédiaires OAuth (/callback, /authorize…) pour ne pas
+                // interrompre le flux d'authentification en cours.
                 lastRedirect = Date.now();
                 try { await wc.loadURL(targetUrl); } catch {}
             }
@@ -223,7 +226,7 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
                 if (wc.isDestroyed()) break;
 
                 const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-                const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
+                const loginPrompt = () => onProgress && onProgress({ type: 'login', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
 
                 onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
 
@@ -244,7 +247,7 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
                         // Phase 2 + pré-chargement APNs de la prochaine école en parallèle.
                         const nextInst = queue[idx]; // peek sans incrémenter
                         const nextBase = nextInst?.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-                        const nextPrompt = nextInst ? () => onProgress && onProgress({ type: 'log', message: `🔐 ${nextInst.prefix} — connectez-vous dans la fenêtre Jamf…` }) : null;
+                        const nextPrompt = nextInst ? () => onProgress && onProgress({ type: 'login', message: `🔐 ${nextInst.prefix} — connectez-vous dans la fenêtre Jamf…` }) : null;
 
                         const [outcomes, nextSnap] = await Promise.all([
                             fetchPhase2(pool, base, inst, stop),

@@ -13,7 +13,12 @@ const LOGIN_WAIT = 180000;
 async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) {
     let deadline = Date.now() + timeout;
     let prompted = false;
-    let wasOnLogin = false;
+    // Délai initial pour laisser loadURL s'établir avant de contrôler l'URL cible.
+    let lastRedirect = Date.now();
+
+    const targetCheck = targetUrl
+        ? `location.href.startsWith(${JSON.stringify(targetUrl.replace(/\/$/, ''))})`
+        : 'true';
 
     while (Date.now() < deadline) {
         if (wc.isDestroyed()) throw new Error('Fenêtre fermée');
@@ -21,23 +26,25 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
         try {
             const s = await wc.executeJavaScript(
                 `(() => ({
-                    ok:    !!document.querySelector(${JSON.stringify(selector)}),
-                    login: !!document.querySelector('input[type="password"]') ||
-                           /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
-                    jamf:  /\\.jamfcloud\\.com/.test(location.href) &&
-                           !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)
+                    ok:       !!document.querySelector(${JSON.stringify(selector)}),
+                    login:    !!document.querySelector('input[type="password"]') ||
+                              /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
+                    jamf:     /\\.jamfcloud\\.com/.test(location.href) &&
+                              !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
+                    onTarget: ${targetCheck},
                 }))()`
             );
             if (s.ok) return true;
             if (s.login) {
-                wasOnLogin = true;
                 if (!prompted) {
                     prompted = true;
                     if (onLogin) onLogin();
                     deadline = Date.now() + LOGIN_WAIT;
                 }
-            } else if (wasOnLogin && s.jamf && targetUrl) {
-                wasOnLogin = false;
+            } else if (s.jamf && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
+                // Sur jamfcloud mais pas sur la page cible : redirection silencieuse
+                // vers /dashboard (SSO déjà actif) ou post-login. On re-navigue.
+                lastRedirect = Date.now();
                 try { await wc.loadURL(targetUrl); } catch {}
             }
         } catch { /* navigation en cours */ }
@@ -64,12 +71,23 @@ function daysUntil(date) { return Math.ceil((date - new Date()) / (1000 * 60 * 6
 
 function parseFrenchDate(text) {
     if (!text) return null;
+    // DD/MM/YYYY
     let m = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
+    // YYYY-MM-DD (ISO)
+    m = text.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+    // D mois YYYY (français)
     const mois = { janvier: 0, février: 1, fevrier: 1, mars: 2, avril: 3, mai: 4, juin: 5,
                    juillet: 6, août: 7, aout: 7, septembre: 8, octobre: 9, novembre: 10, décembre: 11, decembre: 11 };
-    m = text.match(/(\d{1,2})\s+([a-zûéô]+)\s+(\d{4})/i);
+    m = text.match(/(\d{1,2})\s+([a-zûéôà]+)\s+(\d{4})/i);
     if (m && mois[m[2].toLowerCase()] !== undefined) return new Date(+m[3], mois[m[2].toLowerCase()], +m[1]);
+    // Month D, YYYY (anglais)
+    const months = { january:0, february:1, march:2, april:3, may:4, june:5, july:6, august:7,
+                     september:8, october:9, november:10, december:11,
+                     jan:0, feb:1, mar:2, apr:3, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+    m = text.match(/([a-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (m && months[m[1].toLowerCase()] !== undefined) return new Date(+m[3], months[m[1].toLowerCase()], +m[2]);
     return null;
 }
 
@@ -79,7 +97,7 @@ function parseFrenchDate(text) {
 
 async function fetchApns(wc, base, inst, stop, onLogin) {
     if (!inst.collectApns) return null;
-    await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 15000, stop, onLogin);
+    await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime], .v-card, main', 15000, stop, onLogin);
     return pageSnapshot(wc);
 }
 

@@ -134,6 +134,36 @@ function openLoginWindow(loginUrl, partition) {
     });
 }
 
+// ---- Mise à jour ----
+
+function compareVersions(a, b) {
+    const pa = a.split('.').map(Number);
+    const pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) {
+        if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+        if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    }
+    return 0;
+}
+
+ipcMain.handle('check-update', async () => {
+    try {
+        const res = await fetch('https://api.github.com/repos/Backkup/jamf-school-reseller-survey/releases/latest', {
+            headers: { 'User-Agent': 'ApnsMaster-UpdateCheck' },
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        const latest = (data.tag_name || '').replace(/^v/, '');
+        const current = app.getVersion().replace(/-.*$/, ''); // ignore suffixes -beta, -rc…
+        if (latest && compareVersions(latest, current) > 0) {
+            return { version: data.tag_name, url: data.html_url };
+        }
+        return null;
+    } catch { return null; }
+});
+
+ipcMain.handle('open-url', (_, url) => { shell.openExternal(url); });
+
 // Efface les données de navigation de la collecte (cookies SSO, cache, stockages)
 // pour que la session Jamf NE persiste PAS entre deux collectes. On préserve le
 // localStorage (préférences thème/langue de l'interface).

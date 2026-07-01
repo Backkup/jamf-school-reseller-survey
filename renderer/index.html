@@ -121,6 +121,14 @@
   #channelId { width: 150px; }
   .footer-info { font-size: 12px; color: var(--muted); margin-left: auto; }
 
+  /* Bannière mise à jour */
+  .update-banner { display: none; align-items: center; gap: 10px; padding: 7px 18px; background: var(--accent-soft); border-bottom: 1px solid var(--accent); flex-shrink: 0; }
+  .update-banner.show { display: flex; }
+  .update-banner .upd-text { flex: 1; font-size: 12px; font-weight: 500; color: var(--accent); }
+  .update-banner .upd-dl { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+  .update-banner .upd-dl:hover { opacity: .88; }
+  .update-banner .upd-close { background: transparent; border: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 2px 4px; line-height: 1; }
+
   /* Modal */
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(40,38,34,.4); z-index: 100; align-items: center; justify-content: center; }
   .modal-overlay.active { display: flex; }
@@ -140,6 +148,12 @@
     <button class="tb-btn" id="langToggle" onclick="toggleLang()">EN</button>
     <button class="tb-btn" id="themeToggle" onclick="toggleTheme()">🌙</button>
   </div>
+</div>
+
+<div class="update-banner" id="updateBanner">
+  <span class="upd-text" id="updateText"></span>
+  <button class="upd-dl" onclick="openUpdate()"></button>
+  <button class="upd-close" onclick="document.getElementById('updateBanner').classList.remove('show')">✕</button>
 </div>
 
 <div class="tabbar" id="tabbar"></div>
@@ -471,8 +485,27 @@ async function launchMaster(id) {
   if (res && res.error) alert(res.error);
 }
 
+function openUpdate() {
+  const url = document.getElementById('updateBanner').dataset.url;
+  if (url) window.api.openUrl(url);
+}
+
+function showUpdateBanner(upd) {
+  const banner = document.getElementById('updateBanner');
+  document.getElementById('updateText').textContent =
+    currentLang === 'fr'
+      ? `Mise à jour disponible : ${upd.version}`
+      : `Update available: ${upd.version}`;
+  document.querySelector('.upd-dl').textContent =
+    currentLang === 'fr' ? 'Télécharger' : 'Download';
+  banner.dataset.url = upd.url;
+  banner.classList.add('show');
+}
+
 window.api.onScraperDone(() => {});
-init();
+init().then(() => {
+  window.api.checkUpdate().then(upd => { if (upd) showUpdateBanner(upd); });
+});
 </script>
 </body>
 </html>

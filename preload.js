@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('api', {
     setReason: (payload) => ipcRenderer.invoke('set-reason', payload),
     startScraper: (masterId) => ipcRenderer.invoke('start-scraper', { masterId }),
     stopScraper: () => ipcRenderer.invoke('stop-scraper'),
+    checkUpdate: () => ipcRenderer.invoke('check-update'),
+    openUrl: (url) => ipcRenderer.invoke('open-url', url),
     onProgress: (cb) => ipcRenderer.on('progress', (_, data) => cb(data)),
     onDone: (cb) => ipcRenderer.on('done', (_, data) => cb(data)),
     onScraperDone: (cb) => ipcRenderer.on('scraper-done', (_, data) => cb(data)),

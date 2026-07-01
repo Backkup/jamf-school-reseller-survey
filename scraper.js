@@ -15,7 +15,6 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
     let prompted = false;
     // Délai initial pour laisser loadURL s'établir avant de contrôler l'URL cible.
     let lastRedirect = Date.now();
-    let dashHits = 0; // debounce : n'agir qu'après 2 détections consécutives
 
     const targetCheck = targetUrl
         ? `location.href.startsWith(${JSON.stringify(targetUrl.replace(/\/$/, ''))})`
@@ -33,7 +32,6 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     jamf:     /\\.jamfcloud\\.com/.test(location.href) &&
                               !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
                     onTarget: ${targetCheck},
-                    isDash:   /\\/(dashboard|home)(\\?|$|\\/)/i.test(location.pathname),
                 }))()`
             );
             if (s.ok) return true;
@@ -43,21 +41,11 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     if (onLogin) onLogin();
                     deadline = Date.now() + LOGIN_WAIT;
                 }
-            } else if (s.jamf && s.isDash && !s.onTarget && targetUrl) {
-                dashHits++;
-                // Redirigé vers /dashboard ou /home (SSO déjà actif ou post-login).
-                // On exige 2 détections consécutives (200ms) avant de re-naviguer,
-                // pour ignorer les URLs transitoires d'une chaîne de redirection
-                // OAuth, et on ne le fait que depuis ces pages stables — jamais
-                // depuis les pages intermédiaires (/callback, /authorize…) — pour
-                // ne pas interrompre une saisie d'identifiants en cours.
-                if (dashHits >= 2 && Date.now() - lastRedirect > 1500) {
-                    lastRedirect = Date.now();
-                    dashHits = 0;
-                    try { await wc.loadURL(targetUrl); } catch {}
-                }
-            } else {
-                dashHits = 0;
+            } else if (s.jamf && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
+                // Sur jamfcloud mais pas sur la page cible : redirection silencieuse
+                // vers /dashboard (SSO déjà actif) ou post-login. On re-navigue.
+                lastRedirect = Date.now();
+                try { await wc.loadURL(targetUrl); } catch {}
             }
         } catch { /* navigation en cours */ }
         await sleep(POLL);
@@ -235,7 +223,7 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
                 if (wc.isDestroyed()) break;
 
                 const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-                const loginPrompt = () => onProgress && onProgress({ type: 'login', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
+                const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
 
                 onProgress({ type: 'instance', master: master.name, prefix: inst.prefix });
 

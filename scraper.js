@@ -15,6 +15,7 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
     let prompted = false;
     // Délai initial pour laisser loadURL s'établir avant de contrôler l'URL cible.
     let lastRedirect = Date.now();
+    let dashHits = 0; // debounce : n'agir qu'après 2 détections consécutives
 
     const targetCheck = targetUrl
         ? `location.href.startsWith(${JSON.stringify(targetUrl.replace(/\/$/, ''))})`
@@ -42,13 +43,21 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
                     if (onLogin) onLogin();
                     deadline = Date.now() + LOGIN_WAIT;
                 }
-            } else if (s.jamf && s.isDash && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
+            } else if (s.jamf && s.isDash && !s.onTarget && targetUrl) {
+                dashHits++;
                 // Redirigé vers /dashboard ou /home (SSO déjà actif ou post-login).
-                // On re-navigue uniquement depuis ces pages stables, pas depuis les
-                // pages intermédiaires OAuth (/callback, /authorize…) pour ne pas
-                // interrompre le flux d'authentification en cours.
-                lastRedirect = Date.now();
-                try { await wc.loadURL(targetUrl); } catch {}
+                // On exige 2 détections consécutives (200ms) avant de re-naviguer,
+                // pour ignorer les URLs transitoires d'une chaîne de redirection
+                // OAuth, et on ne le fait que depuis ces pages stables — jamais
+                // depuis les pages intermédiaires (/callback, /authorize…) — pour
+                // ne pas interrompre une saisie d'identifiants en cours.
+                if (dashHits >= 2 && Date.now() - lastRedirect > 1500) {
+                    lastRedirect = Date.now();
+                    dashHits = 0;
+                    try { await wc.loadURL(targetUrl); } catch {}
+                }
+            } else {
+                dashHits = 0;
             }
         } catch { /* navigation en cours */ }
         await sleep(POLL);
@@ -194,13 +203,15 @@ function computeLevel(r) {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline par école :
-//   École N  : APNs → [VPP+DEP+Notif (pool)  ║  APNs N+1 (fenêtre principale)]
-//   École N+1: APNs déjà chargé → [VPP+DEP+Notif ║ APNs N+2]  ...
+// Pipeline par école (séquentiel, une seule école à la fois par fenêtre) :
+//   École N : APNs (fenêtre principale, gère la SSO) → VPP+DEP+Notif (pool, parallèle)
 //
-// La fenêtre principale est réutilisée pour pré-charger le prochain APNs
-// pendant que le pool traite la phase 2, éliminant l'attente APNs sur toutes
-// les écoles sauf la première.
+// Aucune navigation croisée : la fenêtre principale (visible, utilisée pour la
+// connexion) n'est JAMAIS sollicitée pour une autre école tant que l'école
+// courante n'est pas entièrement traitée. Un pré-chargement croisé a été tenté
+// (build 13-17) mais provoquait des redirections de la fenêtre de connexion
+// pendant la saisie de l'utilisateur (champ mot de passe vidé, collecte
+// repartant avant la fin de l'authentification) — abandonné définitivement.
 // ---------------------------------------------------------------------------
 
 async function collectMaster(workers, master, onProgress, lang, shouldStop) {
@@ -217,8 +228,6 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
 
     try {
         async function runWorker(wc) {
-            let prefetchedSnap = null; // APNs snapshot pré-chargé pour l'école courante
-
             while (true) {
                 if (stop()) break;
                 const inst = queue[idx++];
@@ -238,27 +247,16 @@ async function collectMaster(workers, master, onProgress, lang, shouldStop) {
                 };
 
                 try {
-                    // Phase 1 : APNs (depuis le pré-chargement ou navigation fraîche)
-                    const apnsSnap = prefetchedSnap ?? await fetchApns(wc, base, inst, stop, loginPrompt);
-                    prefetchedSnap = null;
+                    // Phase 1 : APNs (bloquant, gère la SSO si nécessaire)
+                    const apnsSnap = await fetchApns(wc, base, inst, stop, loginPrompt);
                     applyApns(apnsSnap, result, lang);
 
                     if (!result.locked && !result.inaccessible) {
-                        // Phase 2 + pré-chargement APNs de la prochaine école en parallèle.
-                        const nextInst = queue[idx]; // peek sans incrémenter
-                        const nextBase = nextInst?.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
-                        const nextPrompt = nextInst ? () => onProgress && onProgress({ type: 'login', message: `🔐 ${nextInst.prefix} — connectez-vous dans la fenêtre Jamf…` }) : null;
-
-                        const [outcomes, nextSnap] = await Promise.all([
-                            fetchPhase2(pool, base, inst, stop),
-                            nextInst?.collectApns ? fetchApns(wc, nextBase, nextInst, stop, nextPrompt) : Promise.resolve(null),
-                        ]);
-
-                        prefetchedSnap = nextSnap;
+                        // Phase 2 : VPP + DEP + Notifications, en parallèle sur le pool
+                        const outcomes = await fetchPhase2(pool, base, inst, stop);
                         applyPhase2(outcomes, result);
                     }
                 } catch (err) {
-                    prefetchedSnap = null;
                     result.error = err.message;
                     result.level = 'INACCESSIBLE';
                     onProgress({ type: 'result', result });

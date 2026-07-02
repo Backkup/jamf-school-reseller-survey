@@ -59,6 +59,29 @@ async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
     return waitForSelector(wc, selector, timeout, stop, onLogin, url);
 }
 
+// Certaines instances (serveur Jamf surchargé, latence réseau) rendent une
+// page vide malgré un sélecteur générique satisfait (.content/main présents
+// mais aucun contenu). On détecte ce cas et on retente une seule fois avant
+// d'abandonner — re-navigation vers la MÊME page, sans toucher à une autre
+// école ni à la fenêtre de connexion.
+function isBlankSnapshot(snap) {
+    return snap.txt.trim().length < 20 && !/extend\.html/i.test(snap.url) &&
+           !/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(snap.url);
+}
+
+async function fetchPage(wc, url, selector, timeout, dateWaitMs, stop, onLogin) {
+    await gotoAndWait(wc, url, selector, timeout, stop, onLogin);
+    if (dateWaitMs) await waitForDate(wc, dateWaitMs);
+    let snap = await pageSnapshot(wc);
+    if (isBlankSnapshot(snap) && !(stop && stop())) {
+        await sleep(800);
+        await gotoAndWait(wc, url, selector, timeout, stop, onLogin);
+        if (dateWaitMs) await waitForDate(wc, dateWaitMs);
+        snap = await pageSnapshot(wc);
+    }
+    return snap;
+}
+
 // Le sélecteur générique (.content, main) apparaît souvent avant que le
 // composant Vue affichant la date (time[datetime]) n'ait fini de monter.
 // Poll ciblé supplémentaire, borné, pour laisser cette date apparaître
@@ -138,9 +161,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- APNs ---
     if (inst.collectApns) {
-        await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
-        await waitForDate(wc, 3000);
-        const { url, txt, ts } = await pageSnapshot(wc);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/apns', 'time[datetime]', 25000, 3000, stop, loginPrompt);
         if (/extend\.html/i.test(url)) {
             result.locked = true;
         } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
@@ -158,9 +179,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- VPP ---
     if (inst.collectVpp && !result.locked && !result.inaccessible) {
-        await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
-        await waitForDate(wc, 2000);
-        const { url, txt, ts } = await pageSnapshot(wc);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, 2000, stop, loginPrompt);
         if (/extend\.html/i.test(url)) result.locked = true;
         else if (detectOveruse(txt)) {
             result.overuse = true;
@@ -173,9 +192,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- DEP / ADE ---
     if (inst.collectDep && !result.locked && !result.inaccessible) {
-        await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
-        await waitForDate(wc, 2000);
-        const { url, txt, ts } = await pageSnapshot(wc);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, 2000, stop, loginPrompt);
         if (/extend\.html/i.test(url)) result.locked = true;
         else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
             result.dep = { cgu: true };

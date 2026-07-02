@@ -18,7 +18,7 @@ const LOGIN_WAIT = 180000; // durée max d'attente si l'utilisateur doit se conn
 async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) {
     let deadline = Date.now() + timeout;
     let prompted = false;
-    let wasOnLogin = false;
+    let lastRedirect = Date.now();
 
     while (Date.now() < deadline) {
         if (wc.isDestroyed()) throw new Error('Fenêtre fermée');
@@ -26,25 +26,26 @@ async function waitForSelector(wc, selector, timeout, stop, onLogin, targetUrl) 
         try {
             const s = await wc.executeJavaScript(
                 `(() => ({
-                    ok:    !!document.querySelector(${JSON.stringify(selector)}),
-                    login: !!document.querySelector('input[type="password"]') ||
-                           /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
-                    jamf:  /\\.jamfcloud\\.com/.test(location.href) &&
-                           !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href)
+                    ok:       !!document.querySelector(${JSON.stringify(selector)}),
+                    login:    !!document.querySelector('input[type="password"]') ||
+                              /us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
+                    jamf:     /\\.jamfcloud\\.com/.test(location.href) &&
+                              !/us\\.auth\\.jamf\\.com|\\/u\\/login|\\/authorize|signin/i.test(location.href),
+                    onTarget: ${targetUrl ? `location.href.startsWith(${JSON.stringify(targetUrl.replace(/\/$/, ''))})` : 'true'}
                 }))()`
             );
             if (s.ok) return true;
             if (s.login) {
-                wasOnLogin = true;
                 if (!prompted) {
                     prompted = true;
                     if (onLogin) onLogin();
                     deadline = Date.now() + LOGIN_WAIT;
                 }
-            } else if (wasOnLogin && s.jamf && targetUrl) {
-                // Auth terminée : Jamf a renvoyé vers le dashboard, pas l'URL cible.
-                // Re-navigation immédiate → plus d'attente sur le dashboard.
-                wasOnLogin = false;
+            } else if (s.jamf && !s.onTarget && targetUrl && Date.now() - lastRedirect > 1500) {
+                // Sur jamfcloud mais pas sur la page cible : redirection silencieuse
+                // vers /dashboard (session déjà valide, pas de login visible) ou
+                // retour post-login. On re-navigue sans attendre le timeout.
+                lastRedirect = Date.now();
                 try { await wc.loadURL(targetUrl); } catch {}
             }
         } catch { /* navigation en cours */ }

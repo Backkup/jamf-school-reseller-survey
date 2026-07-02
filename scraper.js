@@ -59,6 +59,19 @@ async function gotoAndWait(wc, url, selector, timeout, stop, onLogin) {
     return waitForSelector(wc, selector, timeout, stop, onLogin, url);
 }
 
+// Le sélecteur générique (.content, main) apparaît souvent avant que le
+// composant Vue affichant la date (time[datetime]) n'ait fini de monter.
+// Poll ciblé supplémentaire, borné, pour laisser cette date apparaître
+// avant de faire le snapshot — purement local à la page, sans navigation.
+async function waitForDate(wc, maxMs) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        const found = await wc.executeJavaScript(`!!document.querySelector('time[datetime]')`).catch(() => false);
+        if (found) return;
+        await sleep(100);
+    }
+}
+
 // Récupère url + texte + timestamp en un seul aller-retour IPC.
 async function pageSnapshot(wc) {
     try {
@@ -73,17 +86,35 @@ async function pageSnapshot(wc) {
     } catch { return { url: '', txt: '', ts: null }; }
 }
 
+// Élargi pour couvrir les variantes de formulation Jamf (FR/EN) d'un dépassement
+// de licences, qu'il apparaisse sur la page APNs ou VPP.
+function detectOveruse(txt) {
+    return /surutilisation|sur-utilisation|dépass\w*\s+(de\s+|vos\s+)?licences?|licences?\s+dépassées?|quota\s+(de\s+)?licences?\s+(dépassé|atteint)|0\s+licence|over.?licens|exceed\w*\s+.*licen[cs]e|licen[cs]e\s+limit|too\s+many\s+devices/i.test(txt);
+}
+
 function daysUntil(date) {
     return Math.ceil((date - new Date()) / (1000 * 60 * 60 * 24));
 }
 
 function parseFrenchDate(text) {
     if (!text) return null;
+    // DD/MM/YYYY
     let m = text.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
     if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
-    const mois = { janvier: 0, février: 1, fevrier: 1, mars: 2, avril: 3, mai: 4, juin: 5, juillet: 6, août: 7, aout: 7, septembre: 8, octobre: 9, novembre: 10, décembre: 11, decembre: 11 };
-    m = text.match(/(\d{1,2})\s+([a-zûéô]+)\s+(\d{4})/i);
+    // YYYY-MM-DD (ISO)
+    m = text.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+    // D mois YYYY (français)
+    const mois = { janvier: 0, février: 1, fevrier: 1, mars: 2, avril: 3, mai: 4, juin: 5,
+                   juillet: 6, août: 7, aout: 7, septembre: 8, octobre: 9, novembre: 10, décembre: 11, decembre: 11 };
+    m = text.match(/(\d{1,2})\s+([a-zûéôà]+)\s+(\d{4})/i);
     if (m && mois[m[2].toLowerCase()] !== undefined) return new Date(+m[3], mois[m[2].toLowerCase()], +m[1]);
+    // Month D, YYYY (anglais)
+    const months = { january:0, february:1, march:2, april:3, may:4, june:5, july:6, august:7,
+                     september:8, october:9, november:10, december:11,
+                     jan:0, feb:1, mar:2, apr:3, jun:5, jul:6, aug:7, sep:8, oct:9, nov:10, dec:11 };
+    m = text.match(/([a-z]+)\s+(\d{1,2}),?\s+(\d{4})/i);
+    if (m && months[m[1].toLowerCase()] !== undefined) return new Date(+m[3], months[m[1].toLowerCase()], +m[2]);
     return null;
 }
 
@@ -108,13 +139,14 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     // --- APNs ---
     if (inst.collectApns) {
         await gotoAndWait(wc, base + '/configuration/apns', 'time[datetime]', 25000, stop, loginPrompt);
+        await waitForDate(wc, 3000);
         const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) {
             result.locked = true;
         } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
             result.inaccessible = true;
             result.error = t(lang, 'err_session');
-        } else if (/surutilisation|0 licence/i.test(txt)) {
+        } else if (detectOveruse(txt)) {
             result.overuse = true;
         } else {
             const date = ts ? new Date(ts) : parseFrenchDate(txt);
@@ -127,9 +159,12 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     // --- VPP ---
     if (inst.collectVpp && !result.locked && !result.inaccessible) {
         await gotoAndWait(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, stop, loginPrompt);
+        await waitForDate(wc, 2000);
         const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
-        else {
+        else if (detectOveruse(txt)) {
+            result.overuse = true;
+        } else {
             const date = ts ? new Date(ts) : parseFrenchDate(txt);
             if (/expiré|expired/i.test(txt) && !date) result.vpp = { expired: true };
             else if (date && !isNaN(date)) result.vpp = { date: date.toISOString(), daysLeft: daysUntil(date) };
@@ -139,6 +174,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     // --- DEP / ADE ---
     if (inst.collectDep && !result.locked && !result.inaccessible) {
         await gotoAndWait(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, stop, loginPrompt);
+        await waitForDate(wc, 2000);
         const { url, txt, ts } = await pageSnapshot(wc);
         if (/extend\.html/i.test(url)) result.locked = true;
         else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {

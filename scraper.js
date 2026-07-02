@@ -69,15 +69,49 @@ function isBlankSnapshot(snap) {
            !/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(snap.url);
 }
 
-async function fetchPage(wc, url, selector, timeout, dateWaitMs, stop, onLogin) {
-    await gotoAndWait(wc, url, selector, timeout, stop, onLogin);
-    if (dateWaitMs) await waitForDate(wc, dateWaitMs);
-    let snap = await pageSnapshot(wc);
-    if (isBlankSnapshot(snap) && !(stop && stop())) {
-        await sleep(800);
+const BLANK_RETRIES = 3; // re-navigations max par page
+
+// Détecteur de contenu : poll 100ms jusqu'à ce que du texte soit rendu.
+// Sort dès que le contenu apparaît — jamais d'attente fixe pleine durée.
+async function waitForContent(wc, maxMs) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        const len = await wc.executeJavaScript(
+            `document.body ? document.body.innerText.trim().length : 0`
+        ).catch(() => 0);
+        if (len >= 20) return true;
+        await sleep(POLL);
+    }
+    return false;
+}
+
+async function fetchPage(wc, url, selector, timeout, dateWaitMs, stop, onLogin, onRetry) {
+    let snap = { url: '', txt: '', ts: null };
+    for (let attempt = 0; attempt <= BLANK_RETRIES; attempt++) {
+        if (stop && stop()) return snap;
+        if (wc.isDestroyed()) throw new Error('Fenêtre fermée');
+
+        if (attempt > 0 && onRetry) onRetry(attempt);
+
+        // Renderer planté (page blanche irrécupérable sans reload) : on relance
+        // puis on attend le retour du contenu via détecteur (sort dès que prêt).
+        if (wc.isCrashed && wc.isCrashed()) {
+            try { wc.reload(); } catch {}
+            await waitForContent(wc, 3000);
+        }
+
         await gotoAndWait(wc, url, selector, timeout, stop, onLogin);
         if (dateWaitMs) await waitForDate(wc, dateWaitMs);
         snap = await pageSnapshot(wc);
+        if (!isBlankSnapshot(snap)) return snap;
+
+        // Page vide : dernier délai de grâce via détecteur (rendu Vue tardif),
+        // on re-navigue immédiatement s'il ne donne rien.
+        if (await waitForContent(wc, 1500)) {
+            if (dateWaitMs) await waitForDate(wc, dateWaitMs);
+            snap = await pageSnapshot(wc);
+            if (!isBlankSnapshot(snap)) return snap;
+        }
     }
     return snap;
 }
@@ -148,6 +182,7 @@ function parseFrenchDate(text) {
 async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
     const base = inst.url.replace(/\/configuration\/apns$/, '').replace(/\/+$/, '');
     const loginPrompt = () => onProgress && onProgress({ type: 'log', message: `🔐 ${inst.prefix} — connectez-vous dans la fenêtre Jamf…` });
+    const retryLog = (page) => (n) => onProgress && onProgress({ type: 'log', message: `♻️ ${inst.prefix} — page ${page} vide, nouvelle tentative ${n}/3…` });
     const result = {
         master: masterName || '',
         prefix: inst.prefix,
@@ -161,7 +196,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- APNs ---
     if (inst.collectApns) {
-        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/apns', 'time[datetime]', 25000, 3000, stop, loginPrompt);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/apns', 'time[datetime]', 25000, 3000, stop, loginPrompt, retryLog('APNs'));
         if (/extend\.html/i.test(url)) {
             result.locked = true;
         } else if (/\/u\/login|\/authorize|us\.auth\.jamf\.com|\/auth|signin/i.test(url) && !/configuration/i.test(url)) {
@@ -179,7 +214,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- VPP ---
     if (inst.collectVpp && !result.locked && !result.inaccessible) {
-        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, 2000, stop, loginPrompt);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/vpp', 'time[datetime], .content, main', 18000, 2000, stop, loginPrompt, retryLog('VPP'));
         if (/extend\.html/i.test(url)) result.locked = true;
         else if (detectOveruse(txt)) {
             result.overuse = true;
@@ -192,7 +227,7 @@ async function collectInstance(wc, inst, masterName, lang, onProgress, stop) {
 
     // --- DEP / ADE ---
     if (inst.collectDep && !result.locked && !result.inaccessible) {
-        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, 2000, stop, loginPrompt);
+        const { url, txt, ts } = await fetchPage(wc, base + '/configuration/dep', '.content, main, time[datetime]', 18000, 2000, stop, loginPrompt, retryLog('ADE'));
         if (/extend\.html/i.test(url)) result.locked = true;
         else if (/accepter les nouvelles conditions|nouvelles conditions générales|terms and conditions/i.test(txt)) {
             result.dep = { cgu: true };
